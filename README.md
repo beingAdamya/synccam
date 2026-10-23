@@ -77,6 +77,12 @@ The Dart code also has iOS-specific behaviour:
 - After iOS suspends the app, the host reopens its listening sockets and camera phones restart clock sync.
 - iOS already mirrors front-camera frames, so the live-view encoder only flips them on Android.
 
+**Downloads.** Pushing a version tag publishes a GitHub Release with the Android APK and the unsigned iOS IPA:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
 **No Mac?** There are two cloud options:
 - **GitHub Actions** ([.github/workflows/build.yml](.github/workflows/build.yml)): push the project to GitHub and every push runs tests, builds the Android APK and builds iOS on a macOS runner. You get an *unsigned* iOS build, which proves it compiles but can't be installed.
 - **Codemagic** ([codemagic.yaml](codemagic.yaml)): signs the app with your Apple Developer account and uploads it to **TestFlight**, so you can install it on any iPhone. The setup steps are at the top of the file. An Apple Developer membership is required for any iPhone install outside a Mac's Xcode.

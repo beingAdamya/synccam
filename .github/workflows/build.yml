@@ -61,3 +61,33 @@ jobs:
         with:
           name: synccam-ios-unsigned
           path: synccam-unsigned.ipa
+
+  # Pushing a tag like v0.2.0 publishes a GitHub Release with both builds:
+  #   git tag v0.2.0 && git push origin v0.2.0
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [android, ios]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mv dist/synccam-android-apk/app-release.apk "SyncCam-$TAG-android.apk"
+          mv dist/synccam-ios-unsigned/synccam-unsigned.ipa "SyncCam-$TAG-ios-unsigned.ipa"
+          cat > notes.md <<NOTES
+          **Android:** download \`SyncCam-$TAG-android.apk\` on each phone and open it (allow "install unknown apps" when asked).
+
+          **iPhone:** \`SyncCam-$TAG-ios-unsigned.ipa\` is not signed, so iOS won't install it as is. Either sign it on your computer with your Apple ID using Sideloadly or AltStore (free account: the app expires after 7 days), or use \`codemagic.yaml\` to get a signed TestFlight build.
+
+          Not yet tested on physical devices.
+          NOTES
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "SyncCam $TAG" \
+            --notes-file notes.md --prerelease \
+            "SyncCam-$TAG-android.apk" "SyncCam-$TAG-ios-unsigned.ipa"
