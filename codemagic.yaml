@@ -1,0 +1,45 @@
+# Signed iOS builds without a Mac: Codemagic builds on its macOS machines,
+# creates the certificate/profile for you, and uploads to TestFlight so you
+# can install SyncCam on any iPhone.
+#
+# One-time setup (needs an Apple Developer account):
+#   1. App Store Connect → Users and Access → Integrations → create an API key
+#      (App Manager role). Download the .p8.
+#   2. Codemagic → Team settings → Integrations → Developer Portal → add the
+#      key and name it "SyncCam ASC Key" (or change the name below).
+#   3. In App Store Connect create an app with the bundle id below. Bundle
+#      ids are global, so if com.synccam.synccam is taken pick your own and
+#      update it here and in Xcode (PRODUCT_BUNDLE_IDENTIFIER).
+#   4. Connect this repository in Codemagic and start "iOS → TestFlight".
+workflows:
+  ios-testflight:
+    name: iOS → TestFlight
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: SyncCam ASC Key
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.synccam.synccam
+    scripts:
+      - name: Apply signing profiles
+        script: xcode-project use-profiles
+      - name: Get packages
+        script: flutter pub get
+      - name: Tests
+        script: flutter test
+      - name: Build signed IPA
+        script: |
+          flutter build ipa --release \
+            --build-number=$((BUILD_NUMBER + 1)) \
+            --export-options-plist=/Users/builder/export_options.plist
+    artifacts:
+      - build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
