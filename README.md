@@ -86,6 +86,8 @@ The Dart code also has iOS-specific behaviour:
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
+**Android signing key.** Every release APK is signed with one permanent key, so a new version installs over the old one and keeps the phone's settings and identity. The key lives in GitHub secrets (`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`). CI refuses to publish an APK whose certificate SHA-256 isn't `d07074bf…73ebc7`. To sign a local release build, set `SYNCCAM_KEY_PROPERTIES` to the path of your `key.properties`. **Keep a backup of the keystore and its password:** if they are lost, no future update can install over existing installs.
+
 **No Mac?** There are two cloud options:
 - **GitHub Actions** ([.github/workflows/build.yml](.github/workflows/build.yml)): push the project to GitHub and every push runs tests, builds the Android APK and builds iOS on a macOS runner. You get an *unsigned* iOS build, which proves it compiles but can't be installed.
 - **Codemagic** ([codemagic.yaml](codemagic.yaml)): signs the app with your Apple Developer account and uploads it to **TestFlight**, so you can install it on any iPhone. The setup steps are at the top of the file. An Apple Developer membership is required for any iPhone install outside a Mac's Xcode.

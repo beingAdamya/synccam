@@ -1,8 +1,24 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+// Release signing key. Every SyncCam release must be signed with the same key,
+// or Android refuses to install an update over the installed app.
+//   CI:    the workflow writes android/key.properties from repository secrets.
+//   Local: point SYNCCAM_KEY_PROPERTIES at your key.properties, or copy it to
+//          android/key.properties (gitignored, never commit it).
+// Without either, release builds fall back to the debug key.
+val keyPropsFile = System.getenv("SYNCCAM_KEY_PROPERTIES")?.let { file(it) }
+    ?: rootProject.file("key.properties")
+val keyProps = Properties().apply {
+    if (keyPropsFile.exists()) FileInputStream(keyPropsFile).use { load(it) }
+}
+val hasReleaseKey = keyProps.getProperty("storeFile") != null
 
 android {
     namespace = "com.synccam.synccam"
@@ -29,11 +45,20 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (hasReleaseKey) {
+            create("release") {
+                storeFile = file(keyProps.getProperty("storeFile"))
+                storePassword = keyProps.getProperty("storePassword")
+                keyAlias = keyProps.getProperty("keyAlias")
+                keyPassword = keyProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (hasReleaseKey) "release" else "debug")
         }
     }
 }

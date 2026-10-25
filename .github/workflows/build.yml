@@ -35,7 +35,35 @@ jobs:
         with:
           channel: stable
           cache: true
+      - name: Set up release signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            # Pull requests from forks get no secrets; they build with the debug key.
+            echo "::warning::No signing secrets available, building with the debug key"
+            exit 0
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          printf 'storeFile=%s\nstorePassword=%s\nkeyPassword=%s\nkeyAlias=%s\n' \
+            "$RUNNER_TEMP/release.jks" "$KEYSTORE_PASSWORD" "$KEYSTORE_PASSWORD" "$KEY_ALIAS" > android/key.properties
       - run: flutter build apk --release
+      - name: Check the APK is signed with the SyncCam release key
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          # Public fingerprint of the release certificate (not a secret).
+          EXPECTED: d07074bf5944424bd95add9dfc9c30f6c07059095ede4caa4361040ca573ebc7
+        run: |
+          APKSIGNER="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner"
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          ACTUAL=$("$APKSIGNER" verify --print-certs "$APK" | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}')
+          echo "APK certificate: $ACTUAL"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::APK is not signed with the release key; refusing to publish it"
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: synccam-android-apk
