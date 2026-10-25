@@ -7,6 +7,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../core/clock.dart';
 import '../core/util.dart';
+import '../core/widgets.dart';
 import 'camera_node.dart';
 
 /// Full-screen viewfinder shown on a phone that has joined a session as a
@@ -22,6 +23,7 @@ class NodeScreen extends StatefulWidget {
 class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
   Timer? _ticker;
   bool _dimmed = false;
+  bool _closing = false;
 
   CameraNode get node => widget.node;
 
@@ -34,12 +36,49 @@ class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
     node.addListener(_changed);
     node.start();
     _ticker = Timer.periodic(const Duration(milliseconds: 100), (_) {
-      if (node.recording || node.countdownTargetLocalUs != null) setState(() {});
+      if (node.countdownTargetLocalUs != null) setState(() {});
     });
   }
 
   void _changed() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {});
+    if (node.ended == 'host' && !_closing) {
+      _closing = true;
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Session ended'),
+          content: const Text('The host ended this session. Anything you captured is saved in Photos '
+              '(SyncCam album) and was sent to the host.'),
+          actions: [FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+        ),
+      ).then((_) {
+        if (mounted) Navigator.of(context).pop();
+      });
+    }
+  }
+
+  Future<void> _confirmLeave() async {
+    if (_closing) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Leave session?'),
+        content: Text(node.recording
+            ? 'This camera is recording. Leaving stops and saves its clip.'
+            : "This camera will be removed from the host's rig."),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Stay')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Leave')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    _closing = true;
+    await node.leave();
+    if (mounted) Navigator.of(context).pop();
   }
 
   @override
@@ -63,7 +102,12 @@ class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final c = node.controller;
     final identify = node.identifyUntil != null && DateTime.now().isBefore(node.identifyUntil!);
-    return Scaffold(
+    return PopScope(
+      canPop: _closing,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _confirmLeave();
+      },
+      child: Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         fit: StackFit.expand,
@@ -107,6 +151,7 @@ class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
             ),
         ],
       ),
+    ),
     );
   }
 
@@ -136,14 +181,15 @@ class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
                   '#${node.slot + 1} ${node.identity.name}${node.sessionName.isEmpty ? '' : ' · ${node.sessionName}'}'),
               const Spacer(),
               if (clock != null)
-                _chip(Icons.sync, clock.isSynced ? Colors.greenAccent : Colors.amber,
-                    clock.isSynced ? '±${clock.errorMs.toStringAsFixed(1)} ms' : 'syncing…'),
+                _chip(clock.isSynced ? Icons.check_circle : Icons.sync, clock.isSynced ? Colors.greenAccent : Colors.amber,
+                    clock.isSynced ? 'Synced ±${clock.errorMs.toStringAsFixed(1)} ms' : 'Syncing clock…'),
             ],
           ),
         ),
         if (rec != null)
-          _chip(Icons.fiber_manual_record, Colors.red,
-              'REC ${formatDuration(Duration(microseconds: MonoClock.nowUs() - rec))}'),
+          Every(const Duration(milliseconds: 500),
+              builder: (_) => _chip(Icons.fiber_manual_record, Colors.red,
+                  'REC ${formatDuration(Duration(microseconds: MonoClock.nowUs() - rec))}')),
         const Spacer(),
         if (node.lastError != null)
           Padding(
@@ -157,10 +203,10 @@ class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
           padding: const EdgeInsets.all(12),
           child: Row(
             children: [
-              IconButton.filledTonal(
-                tooltip: 'Leave session',
-                onPressed: () => Navigator.of(context).pop(),
+              FilledButton.tonalIcon(
+                onPressed: _confirmLeave,
                 icon: const Icon(Icons.logout),
+                label: const Text('Leave'),
               ),
               const SizedBox(width: 8),
               IconButton.filledTonal(

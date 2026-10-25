@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/protocol.dart';
+import '../core/updates.dart';
 import '../core/util.dart';
 import 'device_tile.dart';
 import 'host_server.dart';
@@ -185,6 +186,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               ),
               _section('Device'),
               ListTile(dense: true, title: const Text('Model'), trailing: Text(d.model)),
+              ListTile(
+                dense: true,
+                title: const Text('SyncCam version'),
+                trailing: Text(
+                  '${d.appVersion ?? 'older than 0.2.0'}${d.versionMismatch ? '  (host: ${AppVersion.current})' : ''}',
+                  style: TextStyle(color: d.incompatible ? Colors.redAccent : d.versionMismatch ? Colors.amber : null),
+                ),
+              ),
               ListTile(
                 dense: true,
                 title: const Text('Clock sync'),

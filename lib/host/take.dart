@@ -2,6 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
+
 import 'host_server.dart';
 
 class TakeDevice {
@@ -178,4 +181,40 @@ class Take {
     out.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     return out;
   }
+}
+
+/// All takes stored on this phone. Shared by a live host session and the
+/// home-screen gallery, which opens it without starting a session.
+class TakeLibrary extends ChangeNotifier {
+  TakeLibrary._(this.dir);
+
+  final Directory dir;
+  final List<Take> takes = [];
+
+  static Future<TakeLibrary> open() async {
+    final lib = TakeLibrary._(Directory('${(await getApplicationDocumentsDirectory()).path}/takes'));
+    await lib.dir.create(recursive: true);
+    lib.takes.addAll(await Take.loadAll(lib.dir));
+    return lib;
+  }
+
+  void add(Take t) {
+    takes.insert(0, t);
+    notifyListeners();
+  }
+
+  Take? byId(String? id) {
+    for (final t in takes) {
+      if (t.id == id) return t;
+    }
+    return null;
+  }
+
+  Future<void> delete(Take t) async {
+    takes.remove(t);
+    if (await t.dir.exists()) await t.dir.delete(recursive: true);
+    notifyListeners();
+  }
+
+  void changed() => notifyListeners();
 }

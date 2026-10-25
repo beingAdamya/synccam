@@ -89,7 +89,7 @@ class _CalibrationScreenState extends State<CalibrationScreen> with SingleTicker
                         : () => Navigator.push(
                               context,
                               MaterialPageRoute<void>(
-                                  builder: (_) => TakeScreen(server: widget.server, take: _last!, calibrate: true)),
+                                  builder: (_) => TakeScreen(library: widget.server.library, server: widget.server, take: _last!, calibrate: true)),
                             ),
                     icon: const Icon(Icons.tune),
                     label: const Text('Review & calibrate'),

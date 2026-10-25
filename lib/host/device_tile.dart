@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../core/util.dart';
+import '../core/widgets.dart';
 import 'host_server.dart';
 
 /// Live view of one remote camera. Rebuilds only when that camera's frame or
@@ -63,13 +64,32 @@ class DeviceTile extends StatelessWidget {
               fit: StackFit.expand,
               children: [
                 Opacity(opacity: d.online ? 1 : 0.35, child: LiveView(device: d)),
-                if (d.recording)
+                if (d.recording) ...[
+                  // Live view is paused while a phone records (streaming frames
+                  // would slow it down), so say so instead of showing a frame
+                  // that looks frozen.
+                  const ColoredBox(color: Colors.black54),
+                  Center(
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      const Text('● REC',
+                          style: TextStyle(color: Colors.red, fontSize: 22, fontWeight: FontWeight.w800)),
+                      if (d.recStartHostUs != null)
+                        Every(const Duration(milliseconds: 500),
+                            builder: (_) => Text(
+                                formatDuration(Duration(microseconds: server.nowUs() - d.recStartHostUs!)),
+                                style: const TextStyle(color: Colors.white, fontSize: 18, fontFeatures: [FontFeature.tabularFigures()]))),
+                      const SizedBox(height: 4),
+                      const Text('live view resumes after recording',
+                          style: TextStyle(color: Colors.white60, fontSize: 10)),
+                    ]),
+                  ),
                   Container(
                     decoration: BoxDecoration(
                       border: Border.all(color: Colors.red, width: 3),
                       borderRadius: BorderRadius.circular(12),
                     ),
                   ),
+                ],
                 Positioned(
                   left: 6,
                   top: 6,
@@ -104,13 +124,9 @@ class DeviceTile extends StatelessWidget {
                         if (d.battery != null)
                           _badge('${d.charging ? '⚡' : ''}${d.battery}%',
                               d.battery! < 20 ? Colors.redAccent : Colors.white70),
-                        if (d.recording)
-                          _badge(
-                              d.recStartHostUs == null
-                                  ? '● REC'
-                                  : '● ${formatDuration(Duration(microseconds: server.nowUs() - d.recStartHostUs!))}',
-                              Colors.red),
                         if (d.pendingUploads > 0) _badge('↑${d.pendingUploads}', Colors.lightBlueAccent),
+                        if (d.incompatible || d.versionMismatch)
+                          _badge('v${d.appVersion ?? '?'}', d.incompatible ? Colors.redAccent : Colors.amber),
                         if (d.hot) _badge(d.thermal == 'critical' ? '🔥 critical' : '🔥 hot', Colors.deepOrangeAccent),
                         if (d.lowPower) _badge('low power', Colors.amber),
                         if (d.freeBytes != null)

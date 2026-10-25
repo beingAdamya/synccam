@@ -5,8 +5,11 @@ import 'take.dart';
 import 'take_screen.dart';
 
 class GalleryScreen extends StatelessWidget {
-  const GalleryScreen({super.key, required this.server});
-  final HostServer server;
+  const GalleryScreen({super.key, required this.library, this.server});
+  final TakeLibrary library;
+
+  /// The live session, when opened from the host. Null from the home screen.
+  final HostServer? server;
 
   static IconData iconFor(String kind) => switch (kind) {
         'video' => Icons.videocam,
@@ -20,16 +23,25 @@ class GalleryScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('Takes')),
       body: ListenableBuilder(
-        listenable: server,
+        listenable: library,
         builder: (context, _) {
-          if (server.takes.isEmpty) {
-            return const Center(child: Text('No takes yet. Press the shutter to capture on every camera.'));
+          if (library.takes.isEmpty) {
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(32),
+                child: Text(
+                  'No takes on this phone yet.\n\nTakes are collected on the phone that hosts the session. '
+                  'Photos and videos this phone captured as a camera are in your Photos app, in the SyncCam album.',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            );
           }
           return ListView.separated(
-            itemCount: server.takes.length,
+            itemCount: library.takes.length,
             separatorBuilder: (_, _) => const Divider(height: 1),
             itemBuilder: (_, i) {
-              final t = server.takes[i];
+              final t = library.takes[i];
               final spread = t.spreadMs(0);
               return ListTile(
                 leading: _thumb(t),
@@ -38,7 +50,7 @@ class GalleryScreen extends StatelessWidget {
                     '${t.shots > 1 ? ' · ${t.shots} shots' : ''}'
                     '${spread != null ? ' · spread ${spread.toStringAsFixed(1)} ms' : ''}'),
                 onTap: () => Navigator.push(
-                    context, MaterialPageRoute<void>(builder: (_) => TakeScreen(server: server, take: t))),
+                    context, MaterialPageRoute<void>(builder: (_) => TakeScreen(library: library, server: server, take: t))),
               );
             },
           );

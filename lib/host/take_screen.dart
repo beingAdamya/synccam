@@ -12,8 +12,11 @@ import 'take.dart';
 
 /// Every camera's result for one take, side by side, with timing and export.
 class TakeScreen extends StatefulWidget {
-  const TakeScreen({super.key, required this.server, required this.take, this.calibrate = false});
-  final HostServer server;
+  const TakeScreen({super.key, required this.library, required this.take, this.server, this.calibrate = false});
+  final TakeLibrary library;
+
+  /// The live session; calibration needs it to set per-camera trims.
+  final HostServer? server;
   final Take take;
   final bool calibrate;
 
@@ -71,7 +74,7 @@ class _TakeScreenState extends State<TakeScreen> {
       ),
     );
     if (ok != true) return;
-    await widget.server.deleteTake(take);
+    await widget.library.delete(take);
     if (mounted) Navigator.pop(context);
   }
 
@@ -114,7 +117,8 @@ class _TakeScreenState extends State<TakeScreen> {
     readings.updateAll((_, v) => v - ref > 30000 ? v - 60000 : (ref - v > 30000 ? v + 60000 : v));
     final sorted = readings.values.toList()..sort();
     final median = sorted[sorted.length ~/ 2];
-    final devs = {for (final d in widget.server.devices) d.id: d};
+    final server = widget.server!;
+    final devs = {for (final d in server.devices) d.id: d};
     final report = <String>[];
     readings.forEach((id, v) {
       final d = devs[id];
@@ -122,7 +126,7 @@ class _TakeScreenState extends State<TakeScreen> {
       if (d == null || dev == null) return;
       // Remove intentional stagger before comparing.
       final err = v - median - dev.slot * take.staggerMs;
-      widget.server.setTrim(d, d.trimMs + err);
+      server.setTrim(d, d.trimMs + err);
       report.add('${d.name}: ${err >= 0 ? '+' : ''}${err.toStringAsFixed(0)} ms');
     });
     _snack('Trims updated · ${report.join(' · ')}');
@@ -135,7 +139,7 @@ class _TakeScreenState extends State<TakeScreen> {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: widget.server,
+      listenable: widget.library,
       builder: (context, _) {
         final its = take.itemsForShot(_shot);
         final starts = [
@@ -149,7 +153,7 @@ class _TakeScreenState extends State<TakeScreen> {
           appBar: AppBar(
             title: Text(take.kind == 'video' ? 'Video take' : 'Photo take'),
             actions: [
-              if (widget.calibrate || take.kind != 'video')
+              if (widget.server != null && (widget.calibrate || take.kind != 'video'))
                 IconButton(tooltip: 'Calibrate from clock', icon: const Icon(Icons.tune), onPressed: _calibrate),
               IconButton(tooltip: 'Save all to Photos', icon: const Icon(Icons.download), onPressed: _busy ? null : _saveAll),
               IconButton(tooltip: 'Share', icon: const Icon(Icons.share), onPressed: _share),

@@ -18,6 +18,7 @@ class Msg {
   static const captured = 'captured';
   static const error = 'error';
   static const caps = 'caps';
+  static const bye = 'bye'; // camera is leaving on purpose
 
   // host -> node
   static const welcome = 'welcome';
@@ -31,6 +32,7 @@ class Msg {
   static const rename = 'rename';
   static const policy = 'policy';
   static const countdown = 'countdown';
+  static const endSession = 'endSession';
 }
 
 String encodeMsg(String type, [Map<String, dynamic>? body]) =>

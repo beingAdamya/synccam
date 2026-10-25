@@ -18,6 +18,8 @@ Built with Flutter, so one codebase covers Android and iOS. Phones talk to each 
 - Global controls that apply to every phone at once: front/back lens, flash (off/auto/on/torch), zoom, exposure compensation, AE lock, AF lock, resolution (240p–4K/max), frame rate, audio on/off, stabilization, JPEG quality, capture-orientation lock, and a grid overlay.
 - **Per-device overrides.** Tap a tile for a sharper, faster live view of that phone. Settings you change there (lens, zoom, EV, flash) apply to that phone only. One tap resets them.
 - **Tap-to-focus/expose** on any live view. It can apply to one camera or to all of them.
+- **Sync status at a glance.** The title bar says "All 4 in sync · ±1.8 ms · Excellent" (or which cameras aren't), and tapping it lists every camera's clock error. After each shot the host reports what happened, e.g. "All 4 cameras fired within 2.1 ms of each other" or "3 of 4 fired · no response from Pixel 7".
+- **Sessions.** The host can **End session** (menu, or back): it stops any recording, waits for files to arrive, then sends every camera back to its start screen. A camera can **Leave**; the host removes its tile. A phone that rejoins replaces its old tile instead of appearing twice.
 - **Identify.** Long-press a tile and that phone flashes white with its number and vibrates, so you can find it in the rig.
 - **Rig order.** Drag cameras into their physical left-to-right order. The order sets file names (`01_…`, `02_…`) and the bullet-time sequence.
 
@@ -36,10 +38,11 @@ You can add a countdown (3/5/10 s). The number shows on the host and on every ca
 - **Rig health.** Each tile shows free storage, overheating (🔥) and power-saving mode, read natively on both platforms. Pressing record warns you about any phone that is hot, nearly full, in Low Power Mode or not yet synced.
 - Each camera uploads its files straight to the host when it captures. The host groups them into **takes**: one folder per shot, holding every angle plus a `manifest.json` with microsecond host-clock timestamps.
 - Each phone can also keep its own copy in a "SyncCam" album.
-- The **Takes** gallery shows every angle side by side, with each camera's offset in ms and the overall trigger spread. You can save a whole take to Photos or share it (AirDrop, Drive, …) with its manifest.
+- The **Gallery** (home screen, or the host's toolbar) shows every angle side by side, with each camera's offset in ms and the overall trigger spread. You can save a whole take to Photos or share it (AirDrop, Drive, …) with its manifest.
 
 ### Camera phones
-- Join by auto-discovery (Bonjour/NSD), by scanning the host's QR code, or by typing the host's IP. They reconnect automatically.
+- Join by auto-discovery (Bonjour/NSD), by scanning the host's QR code, or by typing the host's IP. They reconnect automatically if Wi-Fi drops.
+- **Updates.** On launch the app checks this repo's GitHub Releases and shows a banner when a newer version exists (Android downloads the APK; iPhone opens the release page). The host flags any camera running a different version, since mixed versions can break timing.
 - Keep-awake, plus a **dim** mode that blacks out the screen to save battery while still recording.
 - The host phone can **be a camera too**: it joins its own session over loopback.
 
@@ -121,8 +124,11 @@ lib/
     frame_encoder.dart  YUV/BGRA → small JPEG live view on a background isolate
     util.dart           async lock, slate WAV generator, IP helpers
     device_health.dart  thermal / low-power / storage from native code
+    updates.dart        app version, GitHub Releases update check
+    widgets.dart        small shared widgets (self-ticking timers)
   host/
-    host_server.dart    HTTP+WebSocket server, device registry, capture scheduling, uploads
+    host_server.dart    HTTP+WebSocket server, device registry, capture scheduling, uploads, sync reports
+    sync_panel.dart     title-bar sync chip + per-camera sync sheet
     take.dart           take model + manifest.json (timing, spread, head trims)
     host_screen.dart    live grid + control panel + QR join sheet
     device_detail_screen.dart, rig_order_screen.dart, calibration_screen.dart,
@@ -143,6 +149,7 @@ test/sync_test.dart     clock-sync convergence, trigger precision, take math
 
 ## Known limits and next steps
 - The Flutter `camera` plugin has no manual ISO, shutter speed or white balance. Adding these needs a small native extension (Camera2 / AVFoundation). Today, AE/AF lock + EV give consistent exposure across the rig.
-- On Android, live view pauses on the host while a phone is recording (tiles show REC). That's because CameraX can't run an extra analysis stream during recording on every device. iOS keeps live view while recording.
+- Live view pauses while a phone is recording; its tile shows a REC card with the running time. Streaming frames during recording made phones lag (the camera plugin copies every full-resolution frame into the app), so it's off on both platforms.
+- Outside recording, live view grabs single frames at 6 fps (15 fps for the camera opened full-screen), not a continuous stream, for the same reason.
 - Large 4K videos upload over Wi-Fi after you stop recording. You can turn uploads off and collect the files from each phone's gallery instead.
 - Ideas: automatic calibration (decode the clock from photos on-device), RAW/DNG capture, LTC timecode audio track, and remote file browser per camera.

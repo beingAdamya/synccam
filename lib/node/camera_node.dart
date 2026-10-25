@@ -15,6 +15,7 @@ import '../core/clock.dart';
 import '../core/device_health.dart';
 import '../core/frame_encoder.dart';
 import '../core/protocol.dart';
+import '../core/updates.dart';
 import '../core/util.dart';
 
 enum LinkState { connecting, connected, disconnected }
@@ -97,6 +98,9 @@ class CameraNode extends ChangeNotifier {
   int pendingUploads = 0;
   DeviceHealth health = DeviceHealth();
 
+  /// Set when the session is over: 'host' (host ended it) or 'left'.
+  String? ended;
+
   bool autoUpload = true;
   bool keepCopy = true;
 
@@ -105,8 +109,9 @@ class CameraNode extends ChangeNotifier {
   int _previewFps = 6;
   int _previewMax = 360;
   int _previewQ = 55;
-  int _lastFrameUs = 0;
-  bool _streaming = false;
+  bool _liveHold = true;
+  Timer? _pulseTimer;
+  Future<void>? _pulseOp;
 
   WebSocket? _ws;
   ClockSyncClient? clock;
@@ -165,7 +170,7 @@ class CameraNode extends ChangeNotifier {
 
   void _onLinkLost() {
     _ws = null;
-    if (_disposed) return;
+    if (_disposed || ended != null) return;
     link = LinkState.disconnected;
     notifyListeners();
     _reconnectTimer?.cancel();
@@ -196,6 +201,7 @@ class CameraNode extends ChangeNotifier {
       'platform': Platform.operatingSystem,
       'model': model,
       'v': Net.protocolVersion,
+      'app': AppVersion.current,
     };
   }
 
@@ -274,6 +280,9 @@ class CameraNode extends ChangeNotifier {
         _previewFps = (m['fps'] as num?)?.toInt() ?? _previewFps;
         _previewMax = (m['max'] as num?)?.toInt() ?? _previewMax;
         _previewQ = (m['q'] as num?)?.toInt() ?? _previewQ;
+        _restartPulseTimer();
+      case Msg.endSession:
+        _end(byHost: true);
       case Msg.rename:
         identity.rename(m['name'] as String).then((_) => notifyListeners());
       case Msg.policy:
@@ -301,7 +310,7 @@ class CameraNode extends ChangeNotifier {
   Future<void> _initCamera(CameraSettings s) async {
     final desc = _pickCamera(s.lens);
     if (desc == null) return;
-    await _stopStream();
+    await _pauseLive();
     final old = controller;
     controller = null;
     notifyListeners();
@@ -324,7 +333,7 @@ class CameraNode extends ChangeNotifier {
       evStep = await c.getExposureOffsetStepSize();
       settings = s;
       await _applyLive(s, force: true);
-      await _startStream();
+      await _resumeLive();
       _sendCaps();
     } catch (e) {
       lastError = 'Camera init failed: $e';
@@ -420,33 +429,65 @@ class CameraNode extends ChangeNotifier {
 
   // ------------------------------------------------------------ live view
 
-  Future<void> _startStream() async {
+  // The camera plugin copies *every* stream frame (30 fps, full capture
+  // resolution: ~8 MB per 1080p BGRA frame on iPhone, far more at 4K) into
+  // Dart while a stream is open. Leaving it open made the phone lag. Instead,
+  // live view grabs one frame at a time: open the stream, take the first
+  // frame, close it, at the host's requested rate.
+
+  /// Lets live view run again after a capture or camera change.
+  Future<void> _resumeLive() async {
+    _liveHold = false;
+    _pulseTimer ??= Timer.periodic(Duration(milliseconds: 1000 ~/ max(1, _previewFps)), (_) => _pulse());
+  }
+
+  /// Stops live view and waits for any frame grab in progress, so the camera
+  /// is free for capture, recording or reconfiguration.
+  Future<void> _pauseLive() async {
+    _liveHold = true;
+    await _pulseOp;
     final c = controller;
-    if (c == null || _streaming || !c.supportsImageStreaming()) return;
-    try {
-      await c.startImageStream(_onFrame);
-      _streaming = true;
-    } catch (e) {
-      lastError = 'live view: $e';
+    if (c != null && c.value.isStreamingImages && !c.value.isRecordingVideo) {
+      try {
+        await c.stopImageStream();
+      } catch (_) {}
     }
   }
 
-  Future<void> _stopStream() async {
-    final c = controller;
-    if (c == null || !_streaming) return;
-    _streaming = false;
-    try {
-      if (c.value.isStreamingImages && !c.value.isRecordingVideo) await c.stopImageStream();
-    } catch (_) {}
+  void _restartPulseTimer() {
+    _pulseTimer?.cancel();
+    _pulseTimer = null;
+    if (!_liveHold) _resumeLive();
   }
 
-  void _onFrame(CameraImage image) {
-    final ws = _ws;
+  void _pulse() {
     final c = controller;
-    if (ws == null || c == null || !_previewEnabled || _encoder.busy) return;
-    final now = MonoClock.nowUs();
-    if (now - _lastFrameUs < 1000000 ~/ max(1, _previewFps)) return;
-    _lastFrameUs = now;
+    if (_liveHold || _pulseOp != null || !_previewEnabled || _ws == null || _encoder.busy) return;
+    if (c == null || !c.value.isInitialized || c.value.isRecordingVideo || c.value.isStreamingImages) return;
+    if (!c.supportsImageStreaming()) return;
+    _pulseOp = _grabFrame(c).whenComplete(() => _pulseOp = null);
+  }
+
+  Future<void> _grabFrame(CameraController c) async {
+    final got = Completer<CameraImage>();
+    try {
+      await c.startImageStream((img) {
+        if (!got.isCompleted) got.complete(img);
+      });
+      // Short timeout: a capture may be waiting on this grab to finish.
+      final img = await got.future.timeout(const Duration(milliseconds: 400));
+      await c.stopImageStream();
+      _sendFrame(img, c);
+    } catch (_) {
+      if (c.value.isStreamingImages) {
+        try {
+          await c.stopImageStream();
+        } catch (_) {}
+      }
+    }
+  }
+
+  void _sendFrame(CameraImage image, CameraController c) {
     // Android delivers sensor-native frames; iOS already rotates them and
     // mirrors the front camera, so only Android needs both corrections.
     final front = Platform.isAndroid && c.description.lensDirection == CameraLensDirection.front;
@@ -488,7 +529,7 @@ class CameraNode extends ChangeNotifier {
 
     // Arm: stop live-view encoding so the capture pipeline has the CPU and
     // the camera to itself at the trigger instant.
-    await _stopStream();
+    await _pauseLive();
 
     final results = <(XFile, int, int, int)>[];
     for (var k = 0; k < count; k++) {
@@ -506,7 +547,7 @@ class CameraNode extends ChangeNotifier {
         notifyListeners();
       }
     }
-    await _startStream();
+    await _resumeLive();
 
     for (final (file, shotIdx, called, returned) in results) {
       capturesThisSession++;
@@ -529,7 +570,7 @@ class CameraNode extends ChangeNotifier {
     if (c == null || recording) return;
     countdownTargetLocalUs = _toLocal(atHostUs);
     notifyListeners();
-    await _stopStream();
+    await _pauseLive();
     try {
       await c.prepareForVideoRecording();
     } catch (_) {}
@@ -538,14 +579,16 @@ class CameraNode extends ChangeNotifier {
     try {
       // iOS can keep live view running while recording; on Android an extra
       // analysis stream during recording is not supported on all devices.
-      await c.startVideoRecording(onAvailable: Platform.isIOS ? _onFrame : null);
+      // No live-view stream while rolling: it would copy every frame into
+      // Dart and lag the phone. The host shows a REC card instead.
+      await c.startVideoRecording();
       _recStartReturnedHost = _hostNow();
       recording = true;
       recordStartLocalUs = MonoClock.nowUs();
       _recordTake = take;
     } catch (e) {
       _send(Msg.error, {'take': take, 'msg': 'record failed: $e'});
-      await _startStream();
+      await _resumeLive();
     }
     countdownTargetLocalUs = null;
     notifyListeners();
@@ -580,8 +623,7 @@ class CameraNode extends ChangeNotifier {
       recording = false;
       _send(Msg.error, {'msg': 'stop failed: $e'});
     }
-    _streaming = false;
-    await _startStream();
+    await _resumeLive();
     notifyListeners();
     _sendStatus();
   }
@@ -589,6 +631,12 @@ class CameraNode extends ChangeNotifier {
   /// Saves to the phone's gallery and/or uploads to the host, off the
   /// capture path.
   Future<void> _deliver(XFile file, String take, int shot, String kind) async {
+    // Count it as pending right away, so a host ending the session waits
+    // for this file even while it is still being saved to the gallery.
+    if (autoUpload) {
+      pendingUploads++;
+      notifyListeners();
+    }
     if (keepCopy) {
       try {
         if (await Gal.requestAccess(toAlbum: true)) {
@@ -601,8 +649,6 @@ class CameraNode extends ChangeNotifier {
       }
     }
     if (!autoUpload) return;
-    pendingUploads++;
-    notifyListeners();
     for (var attempt = 0; attempt < 3; attempt++) {
       if (await _upload(file, take, shot, kind)) break;
       await Future<void>.delayed(Duration(seconds: 2 << attempt));
@@ -636,6 +682,26 @@ class CameraNode extends ChangeNotifier {
     }
   }
 
+  /// Leave the session from this phone. The host removes this camera
+  /// instead of showing it offline.
+  Future<void> leave() async {
+    if (recording) await _lock.run(() => _stopVideo(_hostNow()));
+    _send(Msg.bye);
+    _end(byHost: false);
+  }
+
+  void _end({required bool byHost}) {
+    if (ended != null) return;
+    ended = byHost ? 'host' : 'left';
+    _reconnectTimer?.cancel();
+    _pulseTimer?.cancel();
+    _liveHold = true;
+    if (byHost && recording) _lock.run(() => _stopVideo(_hostNow()));
+    // Give the bye / final upload a moment before dropping the link.
+    Timer(const Duration(milliseconds: 300), () => _ws?.close());
+    notifyListeners();
+  }
+
   /// Called by the UI when the app goes to background / returns.
   void onLifecycle(bool resumed) {
     if (resumed) {
@@ -645,7 +711,7 @@ class CameraNode extends ChangeNotifier {
       _lock.run(() => _initCamera(settings));
     } else if (!recording) {
       _lock.run(() async {
-        await _stopStream();
+        await _pauseLive();
         final c = controller;
         controller = null;
         notifyListeners();
@@ -659,6 +725,7 @@ class CameraNode extends ChangeNotifier {
     _disposed = true;
     _statusTimer?.cancel();
     _reconnectTimer?.cancel();
+    _pulseTimer?.cancel();
     _ws?.close();
     clock?.stop();
     _encoder.dispose();

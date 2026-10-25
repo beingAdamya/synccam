@@ -1,15 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:nsd/nsd.dart' as nsd;
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/clock.dart';
 import '../core/protocol.dart';
+import '../core/updates.dart';
 import '../core/util.dart';
 import 'take.dart';
 
@@ -21,6 +22,11 @@ class RemoteDevice extends ChangeNotifier {
   String name = 'Camera';
   String platform = '';
   String model = '';
+  String? lastIp;
+
+  /// App version the camera reported; null for builds before 0.2.0.
+  String? appVersion;
+  int protocol = Net.protocolVersion;
   WebSocket? ws;
   bool get online => ws != null;
 
@@ -50,6 +56,12 @@ class RemoteDevice extends ChangeNotifier {
   String? thermal;
   bool lowPower = false;
   int? freeBytes;
+
+  /// Different message format: capture commands may be misread.
+  bool get incompatible => protocol != Net.protocolVersion;
+
+  /// Same protocol, different build: works, but timing fixes may differ.
+  bool get versionMismatch => appVersion != AppVersion.current;
 
   bool get hot => thermal == 'serious' || thermal == 'critical';
   bool get lowStorage => freeBytes != null && freeBytes! < 2 * 1024 * 1024 * 1024;
@@ -100,10 +112,19 @@ class CaptureConfig {
   bool autoSlate = true;
 }
 
+/// Shown on the host after each trigger: did every camera fire, and how
+/// close together.
+class CaptureReport {
+  CaptureReport(this.text, {required this.ok});
+  final String text;
+  final bool ok;
+}
+
 class HostServer extends ChangeNotifier {
-  HostServer({required this.sessionName});
+  HostServer({required this.sessionName, required this.library});
 
   final String sessionName;
+  final TakeLibrary library;
   HttpServer? _http;
   final ClockSyncServer _clock = ClockSyncServer();
   nsd.Registration? _registration;
@@ -121,7 +142,7 @@ class HostServer extends ChangeNotifier {
   /// faster live view.
   String? focusedDeviceId;
 
-  final List<Take> takes = [];
+  List<Take> get takes => library.takes;
   Take? activeVideoTake;
   Take? _intervalTake;
   Timer? _intervalTimer;
@@ -133,16 +154,15 @@ class HostServer extends ChangeNotifier {
   final AudioPlayer _player = AudioPlayer();
   final Uint8List _beep = slateWav();
 
-  late Directory takesDir;
   SharedPreferences? _prefs;
+  final StreamController<CaptureReport> _reports = StreamController.broadcast();
+  Stream<CaptureReport> get reports => _reports.stream;
+  int _activeUploads = 0;
 
   int nowUs() => MonoClock.nowUs();
 
   Future<void> start() async {
     _prefs = await SharedPreferences.getInstance();
-    takesDir = Directory('${(await getApplicationDocumentsDirectory()).path}/takes');
-    await takesDir.create(recursive: true);
-    takes.addAll(await Take.loadAll(takesDir));
     try {
       // The slate must not steal the audio session from the camera: on iOS a
       // plain playback session would interrupt the host phone's own
@@ -201,6 +221,7 @@ class HostServer extends ChangeNotifier {
     final r = _registration;
     if (r != null) nsd.unregister(r);
     _player.dispose();
+    _reports.close();
     super.dispose();
   }
 
@@ -215,8 +236,9 @@ class HostServer extends ChangeNotifier {
             await req.response.close();
             return;
           }
+          final ip = req.connectionInfo?.remoteAddress.address;
           final ws = await WebSocketTransformer.upgrade(req, compression: CompressionOptions.compressionOff);
-          _onSocket(ws);
+          _onSocket(ws, ip);
         case '/upload':
           await _onUpload(req);
         default:
@@ -233,7 +255,7 @@ class HostServer extends ChangeNotifier {
     }
   }
 
-  void _onSocket(WebSocket ws) {
+  void _onSocket(WebSocket ws, String? ip) {
     RemoteDevice? dev;
     ws.listen(
       (data) {
@@ -246,7 +268,7 @@ class HostServer extends ChangeNotifier {
         }
         final m = jsonDecode(data as String) as Map<String, dynamic>;
         if (m['t'] == Msg.hello) {
-          dev = _onHello(ws, m);
+          dev = _onHello(ws, m, ip);
         } else if (dev != null) {
           _onDeviceMessage(dev!, m);
         }
@@ -257,16 +279,30 @@ class HostServer extends ChangeNotifier {
     );
   }
 
-  RemoteDevice _onHello(WebSocket ws, Map<String, dynamic> m) {
+  RemoteDevice _onHello(WebSocket ws, Map<String, dynamic> m, String? ip) {
     final id = m['id'] as String;
     final isNew = !_devices.containsKey(id);
+    // The same phone rejoining under a new id (reinstalled app, cleared
+    // data) must replace its old offline tile, not add a second one.
+    final stale = isNew ? _findStale(m, ip) : null;
     final d = _devices.putIfAbsent(id, () => RemoteDevice(id));
+    d.lastIp = ip ?? d.lastIp;
     d.ws?.close();
     d.ws = ws;
     d.name = m['name'] as String? ?? d.name;
     d.platform = m['platform'] as String? ?? '';
     d.model = m['model'] as String? ?? '';
-    if (isNew) {
+    d.appVersion = m['app'] as String?;
+    d.protocol = (m['v'] as num?)?.toInt() ?? 0;
+    if (stale != null) {
+      _devices.remove(stale.id);
+      d
+        ..slot = stale.slot
+        ..trimMs = stale.trimMs
+        ..override = stale.override
+        ..viewTurns = stale.viewTurns;
+      _saveDevicePrefs(d);
+    } else if (isNew) {
       _restoreDevicePrefs(d);
       if (d.slot >= 1 << 20 || _slotTaken(d)) {
         d.slot = _devices.values.where((x) => x != d).fold(-1, (a, x) => x.slot > a ? x.slot : a) + 1;
@@ -278,6 +314,19 @@ class HostServer extends ChangeNotifier {
     _sendPreviewConfig(d);
     notifyListeners();
     return d;
+  }
+
+  RemoteDevice? _findStale(Map<String, dynamic> hello, String? ip) {
+    for (final x in _devices.values) {
+      if (x.online) continue;
+      // Same model, plus the same address or the same name. Model alone
+      // isn't enough (a rig can have several identical phones), and an
+      // address alone could be reused by a different phone.
+      final sameModel = x.model.isNotEmpty && x.model == hello['model'];
+      final sameIp = ip != null && x.lastIp == ip;
+      if (sameModel && (sameIp || x.name == hello['name'])) return x;
+    }
+    return null;
   }
 
   bool _slotTaken(RemoteDevice d) => _devices.values.any((x) => x != d && x.slot == d.slot);
@@ -317,10 +366,16 @@ class HostServer extends ChangeNotifier {
         d.changed();
         notifyListeners();
       case Msg.captured:
-        final take = _takeById(m['take'] as String?);
+        final take = library.byId(m['take'] as String?);
         if (take == null) return;
         take.addCapture(d, m);
         take.save();
+        library.changed();
+        notifyListeners();
+      case Msg.bye:
+        // Left on purpose: remove the tile rather than show it offline.
+        _devices.remove(d.id);
+        if (focusedDeviceId == d.id) focusedDeviceId = null;
         notifyListeners();
       case Msg.error:
         d.error = m['msg'] as String?;
@@ -331,35 +386,38 @@ class HostServer extends ChangeNotifier {
 
   Future<void> _onUpload(HttpRequest req) async {
     final h = req.headers;
-    final d = _devices[h.value('x-device')];
-    final take = _takeById(h.value('x-take'));
-    if (d == null || take == null) {
+    final deviceId = h.value('x-device') ?? '';
+    final take = library.byId(h.value('x-take'));
+    // The camera may already have left; its take record still knows it.
+    final d = _devices[deviceId];
+    final td = take?.device(deviceId);
+    if (take == null || (d == null && td == null)) {
       req.response.statusCode = 404;
       await req.response.close();
       return;
     }
     final shot = int.tryParse(h.value('x-shot') ?? '') ?? 0;
     final ext = (h.value('x-ext') ?? 'bin').replaceAll(RegExp(r'[^A-Za-z0-9]'), '');
-    final safeName = d.name.replaceAll(RegExp(r'[^A-Za-z0-9_-]+'), '_');
+    final name = d?.name ?? td!.name;
+    final slot = d?.slot ?? td!.slot;
+    final safeName = name.replaceAll(RegExp(r'[^A-Za-z0-9_-]+'), '_');
     final fileName =
-        '${(d.slot + 1).toString().padLeft(2, '0')}_${safeName}_s${shot.toString().padLeft(3, '0')}.$ext';
+        '${(slot + 1).toString().padLeft(2, '0')}_${safeName}_s${shot.toString().padLeft(3, '0')}.$ext';
     final file = File('${take.dir.path}/$fileName');
     await file.create(recursive: true);
-    final sink = file.openWrite();
-    await req.cast<List<int>>().pipe(sink);
-    take.attachFile(d.id, shot, fileName);
+    _activeUploads++;
+    notifyListeners();
+    try {
+      await req.cast<List<int>>().pipe(file.openWrite());
+    } finally {
+      _activeUploads--;
+    }
+    take.attachFile(deviceId, shot, fileName);
     await take.save();
     req.response.statusCode = 200;
     await req.response.close();
+    library.changed();
     notifyListeners();
-  }
-
-  Take? _takeById(String? id) {
-    if (id == null) return null;
-    for (final t in takes) {
-      if (t.id == id) return t;
-    }
-    return null;
   }
 
   // ------------------------------------------------------------ settings
@@ -503,6 +561,10 @@ class HostServer extends ChangeNotifier {
   /// rates), or about to run out of space.
   List<String> preflightWarnings() => [
         for (final d in onlineDevices) ...[
+          if (d.incompatible)
+            '${d.name} runs an incompatible SyncCam (${d.appVersion ?? 'old build'}); update it'
+          else if (d.versionMismatch)
+            '${d.name} runs SyncCam ${d.appVersion ?? 'older than 0.2.0'}, host has ${AppVersion.current}',
           if (d.hot) '${d.name} is ${d.thermal == 'critical' ? 'overheating' : 'hot'}',
           if (d.lowStorage) '${d.name} has only ${formatBytes(d.freeBytes!)} free',
           if (d.lowPower) '${d.name} is in power-saving mode',
@@ -510,7 +572,10 @@ class HostServer extends ChangeNotifier {
         ],
       ];
 
-  bool get anyRecording =>onlineDevices.any((d) => d.recording) || activeVideoTake != null;
+  List<RemoteDevice> get outdatedDevices =>
+      onlineDevices.where((d) => d.incompatible || d.versionMismatch).toList();
+
+  bool get anyRecording => onlineDevices.any((d) => d.recording) || activeVideoTake != null;
 
   int _triggerTime({int extraMs = 0}) =>
       nowUs() + (config.leadMs + config.countdownSec * 1000 + extraMs) * 1000;
@@ -520,10 +585,10 @@ class HostServer extends ChangeNotifier {
       baseUs + index * config.staggerMs * 1000 - (d.trimMs * 1000).round();
 
   Take _newTake(CaptureMode mode, int scheduledUs) {
-    final t = Take.create(takesDir, mode.name, scheduledUs, config.staggerMs, [
+    final t = Take.create(library.dir, mode.name, scheduledUs, config.staggerMs, [
       for (final d in onlineDevices) TakeDevice(d.id, d.name, d.slot, d.model, d.trimMs),
     ]);
-    takes.insert(0, t);
+    library.add(t);
     t.save();
     return t;
   }
@@ -557,6 +622,7 @@ class HostServer extends ChangeNotifier {
       });
     }
     _markTrigger(base);
+    if (shot == 0) _reportAfter(take, 0, base, video: false);
     return take;
   }
 
@@ -572,6 +638,7 @@ class HostServer extends ChangeNotifier {
       list[i].send(Msg.startVideo, {'take': take.id, 'at': _deviceTime(list[i], base, i)});
     }
     _markTrigger(base);
+    _reportAfter(take, 0, base, video: true);
     if (config.autoSlate) {
       // Fire a slate ~1.5 s after the trigger, once every phone is rolling.
       final delay = Duration(microseconds: base - nowUs() + 1500000);
@@ -640,9 +707,77 @@ class HostServer extends ChangeNotifier {
     }
   }
 
-  Future<void> deleteTake(Take t) async {
-    takes.remove(t);
-    if (await t.dir.exists()) await t.dir.delete(recursive: true);
-    notifyListeners();
+  Future<void> deleteTake(Take t) => library.delete(t);
+
+  // ------------------------------------------------------------- session
+
+  /// Files still on their way to this host: uploads in progress here plus
+  /// those each camera has queued.
+  int get pendingFiles => _activeUploads + onlineDevices.fold(0, (a, d) => a + d.pendingUploads);
+
+  /// Stops anything still capturing, so ending a session never cuts a clip.
+  void wrapUpCaptures() {
+    stopInterval();
+    if (anyRecording) stopVideo();
+  }
+
+  /// Tells every camera the session is over; they return to their start
+  /// screen instead of trying to reconnect.
+  void endSession() {
+    for (final d in onlineDevices) {
+      d.send(Msg.endSession);
+    }
+  }
+
+  // ---------------------------------------------------------- sync report
+
+  static String syncQuality(double errMs) => errMs < 2
+      ? 'Excellent'
+      : errMs < 5
+          ? 'Good'
+          : errMs < 15
+              ? 'Fair'
+              : 'Poor';
+
+  /// After a trigger, check what actually happened on each camera and post
+  /// a one-line verdict ("All 4 fired within 1.8 ms").
+  void _reportAfter(Take take, int shot, int baseUs, {required bool video}) {
+    final wait = Duration(microseconds: max(0, baseUs - nowUs()) + (video ? 2500000 : 3500000));
+    Timer(wait, () {
+      if (_reports.isClosed) return;
+      final expected = take.devices;
+      final starts = <String, int>{};
+      if (video) {
+        for (final td in expected) {
+          final s = _devices[td.id]?.recStartHostUs;
+          if (s != null) starts[td.id] = s - td.slot * take.staggerMs * 1000;
+        }
+      } else {
+        for (final it in take.itemsForShot(shot)) {
+          final s = it.startUs;
+          final td = take.device(it.deviceId);
+          if (s != null && td != null) starts[td.id] = s - td.slot * take.staggerMs * 1000;
+        }
+      }
+      final missing = [for (final td in expected) if (!starts.containsKey(td.id)) td.name];
+      final spread = starts.length < 2
+          ? 0.0
+          : (starts.values.reduce(max) - starts.values.reduce(min)) / 1000.0;
+      final n = expected.length;
+      if (missing.isNotEmpty) {
+        _reports.add(CaptureReport(
+            '${starts.length} of $n cameras ${video ? 'started recording' : 'fired'} · no response from ${missing.join(', ')}',
+            ok: false));
+      } else if (video) {
+        _reports.add(CaptureReport(
+            'All $n cameras recording · starts within ${spread.toStringAsFixed(0)} ms '
+            '(logged per clip, and removed exactly by the slate when aligning)',
+            ok: true));
+      } else {
+        _reports.add(CaptureReport(
+            n == 1 ? 'Captured on 1 camera' : 'All $n cameras fired within ${spread.toStringAsFixed(1)} ms of each other',
+            ok: spread < 20));
+      }
+    });
   }
 }

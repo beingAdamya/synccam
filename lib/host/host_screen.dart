@@ -7,6 +7,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../core/protocol.dart';
+import '../core/updates.dart';
 import '../node/camera_node.dart';
 import 'calibration_screen.dart';
 import 'device_detail_screen.dart';
@@ -15,18 +16,23 @@ import 'gallery_screen.dart';
 import 'host_server.dart';
 import 'host_settings_screen.dart';
 import 'rig_order_screen.dart';
+import 'sync_panel.dart';
+import 'take.dart';
 
 class HostScreen extends StatefulWidget {
-  const HostScreen({super.key, required this.sessionName, required this.hostIsCamera});
+  const HostScreen({super.key, required this.sessionName, required this.hostIsCamera, required this.library});
   final String sessionName;
   final bool hostIsCamera;
+  final TakeLibrary library;
 
   @override
   State<HostScreen> createState() => _HostScreenState();
 }
 
 class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
-  late final HostServer server = HostServer(sessionName: widget.sessionName);
+  late final HostServer server = HostServer(sessionName: widget.sessionName, library: widget.library);
+  StreamSubscription<CaptureReport>? _reportSub;
+  bool _ending = false;
   CameraNode? _localNode;
   Timer? _ticker;
   bool _flash = false;
@@ -50,9 +56,62 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
         if (mounted) setState(() => _localNode = node);
       }
     });
+    // Only the countdown needs a screen-wide tick; REC clocks tick in place.
     _ticker = Timer.periodic(const Duration(milliseconds: 200), (_) {
-      if (server.nextTriggerUs != null || server.anyRecording) setState(() {});
+      if (server.nextTriggerUs != null) setState(() {});
     });
+    _reportSub = server.reports.listen((r) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          duration: const Duration(seconds: 5),
+          backgroundColor: r.ok ? Colors.green.shade800 : Colors.orange.shade900,
+          content: Row(children: [
+            Icon(r.ok ? Icons.check_circle : Icons.warning_amber, color: Colors.white),
+            const SizedBox(width: 12),
+            Expanded(child: Text(r.text, style: const TextStyle(color: Colors.white))),
+          ]),
+        ));
+    });
+  }
+
+  Future<void> _endSession() async {
+    if (_ending) return;
+    final recording = server.anyRecording || server.intervalRunning;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('End session?'),
+        content: Text([
+          if (recording) 'Recording is still running. It will be stopped and saved.',
+          'All ${server.onlineDevices.length} cameras will be disconnected and return to their start screen.',
+          'Takes stay in the gallery on this phone.',
+        ].join('\n\n')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('End session'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    _ending = true;
+    server.wrapUpCaptures();
+    if (recording || server.pendingFiles > 0) {
+      // Keep the host up until the cameras' files have arrived.
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _FinishingDialog(server: server, waitForStop: recording),
+      );
+    }
+    server.endSession();
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    if (mounted) Navigator.of(context).pop();
   }
 
   void _changed() {
@@ -84,6 +143,7 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
+    _reportSub?.cancel();
     _localNode?.dispose();
     server.removeListener(_changed);
     server.dispose();
@@ -98,16 +158,18 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final devices = server.devices;
-    final online = server.onlineDevices.length;
-    final worstErr = server.onlineDevices.fold<double>(0, (a, d) => d.errMs > a ? d.errMs : a);
-    return Stack(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _endSession();
+      },
+      child: Stack(
       children: [
         Scaffold(
           appBar: AppBar(
             title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(widget.sessionName),
-              Text('$online camera${online == 1 ? '' : 's'} · worst sync ±${worstErr.toStringAsFixed(1)} ms',
-                  style: Theme.of(context).textTheme.bodySmall),
+              SyncChip(server: server),
             ]),
             actions: [
               IconButton(tooltip: 'Add cameras', icon: const Icon(Icons.qr_code), onPressed: _showJoinInfo),
@@ -115,10 +177,14 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
                 tooltip: 'Takes',
                 icon: const Icon(Icons.photo_library_outlined),
                 onPressed: () => Navigator.push(
-                    context, MaterialPageRoute<void>(builder: (_) => GalleryScreen(server: server))),
+                    context, MaterialPageRoute<void>(builder: (_) => GalleryScreen(library: server.library, server: server))),
               ),
               PopupMenuButton<String>(
                 onSelected: (v) {
+                  if (v == 'end') {
+                    _endSession();
+                    return;
+                  }
                   final page = switch (v) {
                     'rig' => RigOrderScreen(server: server),
                     'cal' => CalibrationScreen(server: server),
@@ -130,12 +196,29 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
                   PopupMenuItem(value: 'rig', child: Text('Rig order & timing')),
                   PopupMenuItem(value: 'cal', child: Text('Sync calibration clock')),
                   PopupMenuItem(value: 'settings', child: Text('Capture settings')),
+                  PopupMenuDivider(),
+                  PopupMenuItem(
+                    value: 'end',
+                    child: ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.stop_circle_outlined, color: Colors.redAccent),
+                      title: Text('End session', style: TextStyle(color: Colors.redAccent)),
+                    ),
+                  ),
                 ],
               ),
             ],
           ),
           body: Column(
             children: [
+              if (server.outdatedDevices case final out when out.isNotEmpty)
+                MaterialBanner(
+                  leading: Icon(Icons.system_update, color: out.any((d) => d.incompatible) ? Colors.redAccent : Colors.amber),
+                  content: Text('${out.length} camera${out.length == 1 ? ' runs' : 's run'} a different SyncCam version '
+                      'than this host (${AppVersion.current}): ${out.map((d) => d.name).join(', ')}. '
+                      'Update every phone to the same version for reliable sync.'),
+                  actions: const [SizedBox()],
+                ),
               if (server.startError != null)
                 MaterialBanner(content: Text(server.startError!), actions: const [SizedBox()]),
               Expanded(
@@ -198,6 +281,7 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
           ),
         if (_flash) const IgnorePointer(child: ColoredBox(color: Colors.white, child: SizedBox.expand())),
       ],
+    ),
     );
   }
 
@@ -460,6 +544,68 @@ class _JoinInfo extends StatelessWidget {
                 textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleMedium),
         ],
       ),
+    );
+  }
+}
+
+/// Waits for recordings to stop and files to reach the host before a session
+/// ends, so "End session" never loses footage. "End now" skips the wait;
+/// cameras keep their own copies in Photos either way.
+class _FinishingDialog extends StatefulWidget {
+  const _FinishingDialog({required this.server, required this.waitForStop});
+  final HostServer server;
+  final bool waitForStop;
+
+  @override
+  State<_FinishingDialog> createState() => _FinishingDialogState();
+}
+
+class _FinishingDialogState extends State<_FinishingDialog> {
+  late final Timer _poll;
+  final _since = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    _poll = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      final s = widget.server;
+      // Camera status arrives every 2 s, so give a stop at least 3 s to show up.
+      final settled = !widget.waitForStop || DateTime.now().difference(_since) > const Duration(seconds: 3);
+      final busy = s.onlineDevices.any((d) => d.recording) || s.pendingFiles > 0;
+      final timedOut = DateTime.now().difference(_since) > const Duration(minutes: 3);
+      if ((settled && !busy) || timedOut) {
+        _poll.cancel();
+        if (mounted) Navigator.of(context).pop();
+      } else if (mounted) {
+        setState(() {});
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _poll.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.server;
+    final rec = s.onlineDevices.where((d) => d.recording).length;
+    return AlertDialog(
+      title: const Text('Finishing up'),
+      content: Row(children: [
+        const CircularProgressIndicator(),
+        const SizedBox(width: 20),
+        Expanded(
+          child: Text(rec > 0
+              ? 'Stopping recording on $rec camera${rec == 1 ? '' : 's'}…'
+              : s.pendingFiles > 0
+                  ? 'Receiving ${s.pendingFiles} file${s.pendingFiles == 1 ? '' : 's'} from the cameras…'
+                  : 'Saving…'),
+        ),
+      ]),
+      actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('End now'))],
     );
   }
 }
