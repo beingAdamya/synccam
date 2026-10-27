@@ -114,6 +114,8 @@ jobs:
 
           **iPhone:** \`SyncCam-$TAG-ios-unsigned.ipa\` is not signed, so iOS won't install it as is. Either sign it on your computer with your Apple ID using Sideloadly or AltStore (free account: the app expires after 7 days), or use \`codemagic.yaml\` to get a signed TestFlight build.
 
+          **iPhone without installing anything:** on the host phone open Add cameras → "iPhone, no app" and scan the QR code with the iPhone. A one-time certificate setup in Settings lets Safari use the camera.
+
           Not yet tested on physical devices.
           NOTES
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "SyncCam $TAG" \

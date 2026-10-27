@@ -104,6 +104,7 @@ class DeviceTile extends StatelessWidget {
                             style: const TextStyle(
                                 color: Colors.white, fontWeight: FontWeight.w600, shadows: [Shadow(blurRadius: 4)])),
                       ),
+                      if (d.platform == 'web') _badge('WEB', Colors.white, bg: Colors.indigo),
                       if (d.override.isNotEmpty) const Icon(Icons.tune, size: 14, color: Colors.lightBlueAccent),
                       if (d.error != null) const Icon(Icons.warning_amber, size: 14, color: Colors.orangeAccent),
                     ],

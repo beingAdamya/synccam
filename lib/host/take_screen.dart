@@ -4,10 +4,11 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:video_player/video_player.dart';
 
 import '../core/util.dart';
+import 'compare_screen.dart';
 import 'host_server.dart';
+import 'playback.dart';
 import 'take.dart';
 
 /// Every camera's result for one take, side by side, with timing and export.
@@ -155,6 +156,13 @@ class _TakeScreenState extends State<TakeScreen> {
             actions: [
               if (widget.server != null && (widget.calibrate || take.kind != 'video'))
                 IconButton(tooltip: 'Calibrate from clock', icon: const Icon(Icons.tune), onPressed: _calibrate),
+              if (take.receivedFiles > 0)
+                IconButton(
+                  tooltip: 'Compare angles',
+                  icon: const Icon(Icons.compare),
+                  onPressed: () => Navigator.push(
+                      context, MaterialPageRoute<void>(builder: (_) => CompareScreen(take: take, shot: _shot))),
+                ),
               IconButton(tooltip: 'Save all to Photos', icon: const Icon(Icons.download), onPressed: _busy ? null : _saveAll),
               IconButton(tooltip: 'Share', icon: const Icon(Icons.share), onPressed: _share),
               IconButton(tooltip: 'Delete', icon: const Icon(Icons.delete_outline), onPressed: _delete),
@@ -218,7 +226,7 @@ class _TakeScreenState extends State<TakeScreen> {
                               : it.kind == 'video'
                                   ? InkWell(
                                       onTap: () => Navigator.push(
-                                          context, MaterialPageRoute<void>(builder: (_) => _VideoPage(file: f))),
+                                          context, MaterialPageRoute<void>(builder: (_) => VideoPlayerPage(file: f, title: dev?.name))),
                                       child: Container(
                                         color: Colors.black,
                                         alignment: Alignment.center,
@@ -263,41 +271,5 @@ class _PhotoPage extends StatelessWidget {
         backgroundColor: Colors.black,
         appBar: AppBar(backgroundColor: Colors.black, foregroundColor: Colors.white),
         body: InteractiveViewer(maxScale: 8, child: Center(child: Image.file(file))),
-      );
-}
-
-class _VideoPage extends StatefulWidget {
-  const _VideoPage({required this.file});
-  final File file;
-  @override
-  State<_VideoPage> createState() => _VideoPageState();
-}
-
-class _VideoPageState extends State<_VideoPage> {
-  late final VideoPlayerController _c = VideoPlayerController.file(widget.file)
-    ..initialize().then((_) {
-      if (mounted) setState(() {});
-      _c.play();
-    });
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-        backgroundColor: Colors.black,
-        appBar: AppBar(backgroundColor: Colors.black, foregroundColor: Colors.white),
-        body: Center(
-          child: _c.value.isInitialized
-              ? AspectRatio(aspectRatio: _c.value.aspectRatio, child: VideoPlayer(_c))
-              : const CircularProgressIndicator(),
-        ),
-        floatingActionButton: FloatingActionButton(
-          onPressed: () => setState(() => _c.value.isPlaying ? _c.pause() : _c.play()),
-          child: Icon(_c.value.isPlaying ? Icons.pause : Icons.play_arrow),
-        ),
       );
 }

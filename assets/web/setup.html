@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Join SyncCam</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #111; color: #eee; font: 16px/1.45 -apple-system, system-ui, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .sub { color: #aaa; margin: 0 0 20px; }
+  ol { padding-left: 0; list-style: none; counter-reset: s; }
+  li { counter-increment: s; background: #1d1d1f; border-radius: 14px; padding: 14px 16px 14px 56px; margin: 0 0 12px; position: relative; }
+  li::before { content: counter(s); position: absolute; left: 16px; top: 14px; width: 28px; height: 28px; border-radius: 50%;
+    background: #ff4d4d; color: #fff; font-weight: 700; display: grid; place-items: center; }
+  li.done::before { content: "✓"; background: #2ecc71; }
+  .btn { display: block; width: 100%; box-sizing: border-box; text-align: center; padding: 14px; border-radius: 12px; border: 0;
+    background: #ff4d4d; color: #fff; font: 600 17px -apple-system, system-ui, sans-serif; text-decoration: none; margin-top: 10px; }
+  .btn.secondary { background: #2c2c2e; }
+  .path { color: #ffd479; }
+  small, .muted { color: #999; }
+  code { font-size: 12px; word-break: break-all; color: #bbb; }
+  #status { margin-top: 10px; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Use this iPhone as a camera</h1>
+  <p class="sub">Joins session <b>{{SESSION}}</b>. No app needed. The first time only, iPhone needs this host's security certificate so Safari will allow the camera.</p>
+  <ol>
+    <li id="s1">
+      <b>Download the certificate</b>
+      <a class="btn" href="/ca.crt">Download SyncCam certificate</a>
+      <small>Tap <b>Allow</b> when asked, then <b>Close</b>.</small>
+    </li>
+    <li id="s2">
+      <b>Install it</b><br>
+      Open <span class="path">Settings → General → VPN &amp; Device Management</span>, tap <b>SyncCam Local CA</b> and <b>Install</b>.
+    </li>
+    <li id="s3">
+      <b>Trust it</b><br>
+      Open <span class="path">Settings → General → About → Certificate Trust Settings</span> and turn on <b>SyncCam Local CA</b>.
+    </li>
+    <li id="s4">
+      <b>Open the camera</b>
+      <button class="btn" id="go">Check &amp; open camera</button>
+      <div id="status"></div>
+    </li>
+  </ol>
+  <p class="muted">Steps 1–3 are needed once per iPhone for this host phone. The certificate only lets this iPhone trust the SyncCam host on your local network; you can remove it any time in the same Settings screen.</p>
+  <p class="muted">Certificate fingerprint (SHA-256):<br><code>{{FINGERPRINT}}</code></p>
+</main>
+<script>
+  const secure = 'https://' + location.hostname + ':{{HTTPS_PORT}}/';
+  const status = document.getElementById('status');
+  async function check(open) {
+    status.textContent = 'Checking…';
+    try {
+      const r = await fetch(secure + 'ping', { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      ['s1', 's2', 's3'].forEach(id => document.getElementById(id).classList.add('done'));
+      status.style.color = '#2ecc71';
+      status.textContent = 'Certificate trusted ✓';
+      if (open) location.href = secure;
+      return true;
+    } catch (e) {
+      status.style.color = '#ffb84d';
+      status.textContent = 'Not trusted yet. Finish steps 1–3, then tap again.';
+      return false;
+    }
+  }
+  document.getElementById('go').onclick = () => check(true);
+  check(false);
+</script>
+</body>
+</html>

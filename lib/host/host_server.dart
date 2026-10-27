@@ -4,14 +4,18 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'package:nsd/nsd.dart' as nsd;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/clock.dart';
 import '../core/protocol.dart';
+import '../core/tls.dart';
 import '../core/updates.dart';
 import '../core/util.dart';
+import 'external_camera.dart';
 import 'take.dart';
 
 /// A phone connected to this host as a camera.
@@ -155,6 +159,16 @@ class HostServer extends ChangeNotifier {
   final Uint8List _beep = slateWav();
 
   SharedPreferences? _prefs;
+  HttpServer? _https;
+  LocalCa? _ca;
+  Map<String, String>? _web;
+  Timer? _ipWatch;
+  String? httpsError;
+
+  /// Optional Wi-Fi camera (GoPro, Canon, Lumix). When [externalLeads], its
+  /// own record button starts and stops every phone.
+  ExternalCamera? external;
+  bool externalLeads = true;
   final StreamController<CaptureReport> _reports = StreamController.broadcast();
   Stream<CaptureReport> get reports => _reports.stream;
   int _activeUploads = 0;
@@ -178,6 +192,12 @@ class HostServer extends ChangeNotifier {
       debugPrint('audio context: $e');
     }
     await _bindNetwork();
+    final saved = _prefs?.getString('external');
+    if (saved != null) {
+      externalLeads = _prefs?.getBool('external.leads') ?? true;
+      final cfg = ExternalConfig.fromJson((jsonDecode(saved) as Map).cast<String, dynamic>());
+      if (cfg != null) unawaited(setExternal(cfg));
+    }
     try {
       _registration = await nsd.register(
         nsd.Service(name: sessionName, type: Net.serviceType, port: Net.httpPort),
@@ -198,13 +218,52 @@ class HostServer extends ChangeNotifier {
       startError = 'Could not open network ports: $e';
     }
     addresses = await localIPv4s();
+    await _bindHttps();
+    // Wi-Fi changes (joining a hotspot, a camera's network) change this
+    // phone's IP; the HTTPS certificate must name the current addresses.
+    _ipWatch ??= Timer.periodic(const Duration(seconds: 10), (_) => _checkAddresses());
   }
+
+  /// HTTPS for browser cameras, with a certificate from this phone's local
+  /// CA naming its current IP addresses.
+  Future<void> _bindHttps() async {
+    await _https?.close(force: true);
+    _https = null;
+    try {
+      _web ??= await _loadWebAssets();
+      _ca ??= await LocalCa.loadOrCreate(Directory('${(await getApplicationSupportDirectory()).path}/tls'));
+      final ctx = _ca!.serverContext([...addresses, '127.0.0.1']);
+      _https = await HttpServer.bindSecure(InternetAddress.anyIPv4, Net.httpsPort, ctx, shared: true);
+      _https!.listen(_onRequest);
+      httpsError = null;
+    } catch (e) {
+      httpsError = 'Browser cameras unavailable: $e';
+    }
+  }
+
+  Future<void> _checkAddresses() async {
+    final now = await localIPv4s();
+    if (now.join(',') == addresses.join(',')) return;
+    addresses = now;
+    await _bindHttps();
+    notifyListeners();
+  }
+
+  static Future<Map<String, String>> _loadWebAssets() async => {
+        for (final f in const ['index.html', 'app.js', 'setup.html']) f: await rootBundle.loadString('assets/web/$f'),
+      };
+
+  /// Link an iPhone opens (plain HTTP) to set up trust and reach the camera page.
+  String? get webJoinUrl => addresses.isEmpty ? null : 'http://${addresses.first}:${Net.httpPort}/web';
+  String? get caFingerprint => _ca?.fingerprint;
 
   /// iOS tears down the listening sockets of a suspended app. After the host
   /// comes back to the foreground, reopen them; cameras reconnect on their own.
   Future<void> resumeNetwork() async {
     await _http?.close(force: true);
     _http = null;
+    await _https?.close(force: true);
+    _https = null;
     _clock.stop();
     await _bindNetwork();
     notifyListeners();
@@ -216,7 +275,10 @@ class HostServer extends ChangeNotifier {
     for (final d in _devices.values) {
       d.ws?.close();
     }
+    external?.dispose();
     _http?.close(force: true);
+    _https?.close(force: true);
+    _ipWatch?.cancel();
     _clock.stop();
     final r = _registration;
     if (r != null) nsd.unregister(r);
@@ -241,10 +303,37 @@ class HostServer extends ChangeNotifier {
           _onSocket(ws, ip);
         case '/upload':
           await _onUpload(req);
+        case '/ping':
+          // Lets the setup page check from plain HTTP whether this iPhone
+          // trusts the HTTPS certificate yet.
+          req.response
+            ..headers.set('Access-Control-Allow-Origin', '*')
+            ..write('ok');
+          await req.response.close();
+        case '/ca.crt':
+          final ca = _ca;
+          if (ca == null) throw StateError('no CA');
+          req.response
+            ..headers.contentType = ContentType('application', 'x-x509-ca-cert')
+            ..headers.set('Content-Disposition', 'attachment; filename="SyncCam-Local-CA.crt"')
+            ..add(ca.caCertDer);
+          await req.response.close();
+        case '/web' || '/setup':
+          await _sendPage(req, 'setup.html');
+        case '/' when req.requestedUri.scheme == 'https':
+          await _sendPage(req, 'index.html');
+        case '/app.js':
+          await _sendPage(req, 'app.js', type: ContentType('text', 'javascript', charset: 'utf-8'));
+        case '/':
+          // Plain HTTP root: send browsers to the setup page.
+          req.response
+            ..statusCode = HttpStatus.found
+            ..headers.set('Location', '/web');
+          await req.response.close();
         default:
           req.response
-            ..statusCode = 200
-            ..write('SyncCam host "$sessionName"');
+            ..statusCode = 404
+            ..write('Not found');
           await req.response.close();
       }
     } catch (e) {
@@ -255,10 +344,26 @@ class HostServer extends ChangeNotifier {
     }
   }
 
+  Future<void> _sendPage(HttpRequest req, String file, {ContentType? type}) async {
+    String esc(String v) => const HtmlEscape().convert(v);
+    final body = (_web?[file] ?? '')
+        .replaceAll('{{SESSION}}', esc(sessionName).replaceAll("'", '&#39;'))
+        .replaceAll('{{VERSION}}', AppVersion.current)
+        .replaceAll('{{PROTOCOL}}', '${Net.protocolVersion}')
+        .replaceAll('{{HTTPS_PORT}}', '${Net.httpsPort}')
+        .replaceAll('{{FINGERPRINT}}', _ca?.fingerprint ?? '');
+    req.response
+      ..headers.contentType = type ?? ContentType.html
+      ..headers.set('Cache-Control', 'no-store')
+      ..write(body);
+    await req.response.close();
+  }
+
   void _onSocket(WebSocket ws, String? ip) {
     RemoteDevice? dev;
     ws.listen(
       (data) {
+        final receivedUs = nowUs();
         if (data is Uint8List || data is List<int>) {
           final b = data is Uint8List ? data : Uint8List.fromList(data as List<int>);
           if (dev != null && b.length > 2 && b[0] == PreviewFrame.magic && b[1] == PreviewFrame.kindJpeg) {
@@ -267,6 +372,11 @@ class HostServer extends ChangeNotifier {
           return;
         }
         final m = jsonDecode(data as String) as Map<String, dynamic>;
+        if (m['t'] == Msg.ping) {
+          // NTP-style reply for browser cameras: receive and send times.
+          ws.add(encodeMsg(Msg.pong, {'c': m['c'], 'h1': receivedUs, 'h2': nowUs()}));
+          return;
+        }
         if (m['t'] == Msg.hello) {
           dev = _onHello(ws, m, ip);
         } else if (dev != null) {
@@ -333,6 +443,12 @@ class HostServer extends ChangeNotifier {
 
   void _onSocketClosed(RemoteDevice? d, WebSocket ws) {
     if (d == null || d.ws != ws) return;
+    if (d.recording && !_reports.isClosed) {
+      _reports.add(CaptureReport(
+          '${d.name} lost connection while recording. It keeps recording, and SyncCam stops it '
+          'when it reconnects if the take is over.',
+          ok: false));
+    }
     d.ws = null;
     d.recording = false;
     d.changed();
@@ -355,6 +471,11 @@ class HostServer extends ChangeNotifier {
         d.thermal = m['thermal'] as String?;
         d.lowPower = m['lowPower'] as bool? ?? false;
         d.freeBytes = (m['freeBytes'] as num?)?.toInt();
+        // A camera that dropped out mid-take and came back after the host
+        // stopped would otherwise record forever.
+        if (d.recording && activeVideoTake == null) {
+          d.send(Msg.stopVideo, {'at': nowUs() + 300000});
+        }
         d.changed();
         notifyListeners();
       case Msg.caps:
@@ -596,6 +717,7 @@ class HostServer extends ChangeNotifier {
   /// The big shutter button.
   void shutter() {
     if (onlineDevices.isEmpty) return;
+    HapticFeedback.mediumImpact();
     switch (config.mode) {
       case CaptureMode.photo:
         _photo(count: 1);
@@ -629,10 +751,31 @@ class HostServer extends ChangeNotifier {
   /// Fires a synchronized single photo, e.g. from the calibration screen.
   Take testShot() => _photo(count: 1);
 
-  void startVideo() {
-    final base = _triggerTime();
+  /// Starts every phone. [fromCameraUs] means the Wi-Fi camera started on
+  /// its own and was seen at that time: start the phones as fast as safely
+  /// possible rather than after the normal lead.
+  void startVideo({int? fromCameraUs}) {
+    final base = fromCameraUs != null ? nowUs() + 350000 : _triggerTime();
     final take = _newTake(CaptureMode.video, base);
     activeVideoTake = take;
+    final cam = external;
+    if (cam != null && cam.connected) {
+      take.external = {
+        'model': cam.model ?? cam.config.kind.label,
+        'kind': cam.config.kind.name,
+        'led': fromCameraUs != null,
+        'seenHostUs': ?fromCameraUs,
+      };
+      if (fromCameraUs == null && !cam.recording) {
+        // Pressed in SyncCam: start the camera at the same trigger instant.
+        Timer(Duration(microseconds: max(0, base - nowUs())), () {
+          cam.startRecording().catchError((Object e) {
+            _reports.add(CaptureReport('${cam.model ?? 'Camera'} did not start: $e', ok: false));
+          });
+        });
+      }
+      take.save();
+    }
     final list = onlineDevices;
     for (var i = 0; i < list.length; i++) {
       list[i].send(Msg.startVideo, {'take': take.id, 'at': _deviceTime(list[i], base, i)});
@@ -649,9 +792,13 @@ class HostServer extends ChangeNotifier {
     notifyListeners();
   }
 
-  void stopVideo() {
+  void stopVideo({bool fromCamera = false}) {
     // Stop is less timing-critical; use a short lead so it feels responsive.
     final base = nowUs() + 400000;
+    final cam = external;
+    if (!fromCamera && cam != null && cam.connected && cam.recording) {
+      Timer(Duration(microseconds: base - nowUs()), () => cam.stopRecording().catchError((_) {}));
+    }
     final list = onlineDevices;
     for (var i = 0; i < list.length; i++) {
       list[i].send(Msg.stopVideo, {'at': _deviceTime(list[i], base, i)});
@@ -708,6 +855,45 @@ class HostServer extends ChangeNotifier {
   }
 
   Future<void> deleteTake(Take t) => library.delete(t);
+
+  // ------------------------------------------------------ external camera
+
+  Future<void> setExternal(ExternalConfig? cfg, {bool? leads}) async {
+    external?.dispose();
+    external = null;
+    if (leads != null) externalLeads = leads;
+    await _prefs?.setBool('external.leads', externalLeads);
+    if (cfg == null) {
+      await _prefs?.remove('external');
+      notifyListeners();
+      return;
+    }
+    await _prefs?.setString('external', jsonEncode(cfg.toJson()));
+    final cam = ExternalCamera.create(cfg);
+    cam.onRecordingChanged = _onExternalRecording;
+    cam.addListener(notifyListeners);
+    external = cam;
+    notifyListeners();
+    await cam.start();
+  }
+
+  void setExternalLeads(bool v) {
+    externalLeads = v;
+    _prefs?.setBool('external.leads', v);
+    notifyListeners();
+  }
+
+  void _onExternalRecording(bool recording, int seenUs) {
+    if (!externalLeads || onlineDevices.isEmpty) return;
+    final name = external?.model ?? 'Camera';
+    if (recording && !anyRecording) {
+      startVideo(fromCameraUs: seenUs);
+      _reports.add(CaptureReport('$name started recording → starting ${onlineDevices.length} phones', ok: true));
+    } else if (!recording && anyRecording) {
+      stopVideo(fromCamera: true);
+      _reports.add(CaptureReport('$name stopped → stopping all phones', ok: true));
+    }
+  }
 
   // ------------------------------------------------------------- session
 

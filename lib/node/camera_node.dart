@@ -89,7 +89,7 @@ class CameraNode extends ChangeNotifier {
   bool recording = false;
   int? recordStartLocalUs;
   String? _recordTake;
-  int _recStartCalledHost = 0, _recStartReturnedHost = 0;
+  int _recScheduledHost = 0, _recStartCalledHost = 0, _recStartReturnedHost = 0;
 
   /// Local time of an upcoming capture, so the UI can show a countdown.
   int? countdownTargetLocalUs;
@@ -149,6 +149,7 @@ class CameraNode extends ChangeNotifier {
           .timeout(const Duration(seconds: 6));
       ws.pingInterval = const Duration(seconds: 3);
       _ws = ws;
+      clock?.reset(); // the host may have restarted with a different clock
       link = LinkState.connected;
       lastError = null;
       notifyListeners();
@@ -336,10 +337,27 @@ class CameraNode extends ChangeNotifier {
       await _resumeLive();
       _sendCaps();
     } catch (e) {
-      lastError = 'Camera init failed: $e';
+      final denied = e is CameraException &&
+          (e.code.contains('Denied') || e.code.contains('ermission') || e.code.contains('Restricted'));
+      cameraBlocked = denied;
+      lastError = denied
+          ? 'Camera or microphone access is off. Allow it in Settings → SyncCam, then tap Try again.'
+          : 'Camera failed to start: $e';
+      await c.dispose().catchError((_) {});
     }
     notifyListeners();
   }
+
+  /// True when the OS refused camera access (needs the user, not a retry).
+  bool cameraBlocked = false;
+
+  /// Try the camera again, e.g. after the user granted permission.
+  Future<void> retryCamera() => _lock.run(() async {
+        cameraBlocked = false;
+        lastError = null;
+        if (_cameras.isEmpty) _cameras = await availableCameras().catchError((_) => <CameraDescription>[]);
+        await _initCamera(settings);
+      });
 
   Future<void> _applySettings(CameraSettings next) async {
     if (recording) {
@@ -575,6 +593,7 @@ class CameraNode extends ChangeNotifier {
       await c.prepareForVideoRecording();
     } catch (_) {}
     await waitUntilLocal(_toLocal(atHostUs));
+    _recScheduledHost = atHostUs;
     _recStartCalledHost = _hostNow();
     try {
       // iOS can keep live view running while recording; on Android an extra
@@ -611,7 +630,8 @@ class CameraNode extends ChangeNotifier {
         'take': take,
         'shot': 0,
         'kind': 'video',
-        'scheduledHostUs': atHostUs,
+        'scheduledHostUs': _recScheduledHost,
+        'stopScheduledHostUs': atHostUs,
         'startCalledHostUs': _recStartCalledHost,
         'startReturnedHostUs': _recStartReturnedHost,
         'stopCalledHostUs': stopCalled,

@@ -78,6 +78,8 @@ def main():
     ap.add_argument("--report", action="store_true", help="print offsets only")
     ap.add_argument("--grid", action="store_true", help="also write a side-by-side grid.mp4")
     ap.add_argument("--no-audio-refine", action="store_true", help="trust manifest timing only")
+    ap.add_argument("--extra", type=Path, action="append", default=[],
+                    help="another camera's clip (e.g. the Wi-Fi camera that led the take), aligned by audio; repeatable")
     args = ap.parse_args()
 
     if not shutil.which("ffmpeg"):
@@ -94,12 +96,24 @@ def main():
             continue
         start = it["timing"].get("startReturnedHostUs") or it["timing"].get("startCalledHostUs")
         clips.append({"dev": devices.get(it["device"], {"name": it["device"]}), "path": path, "start_us": start})
+    clips.sort(key=lambda c: c["dev"].get("slot", 0))
+    # Clips from other cameras: their start is unknown to SyncCam, except
+    # when a Wi-Fi camera led the take and the host logged when it started.
+    seen = (manifest.get("externalCamera") or {}).get("seenHostUs")
+    for p in args.extra:
+        if not p.exists():
+            sys.exit(f"extra clip not found: {p}")
+        clips.append({"dev": {"name": p.stem, "slot": 99}, "path": p, "start_us": seen, "unknown": seen is None})
     if len(clips) < 2:
         sys.exit("need at least two video clips in this take")
-    clips.sort(key=lambda c: c["dev"].get("slot", 0))
+    if args.extra and args.no_audio_refine:
+        print("note: --extra clips are only placed precisely with audio refinement")
 
     # 1) Clock-based estimate: trim = how much earlier this clip started than the latest one.
-    latest = max(c["start_us"] for c in clips)
+    latest = max(c["start_us"] for c in clips if c["start_us"] is not None)
+    for c in clips:
+        if c["start_us"] is None:
+            c["start_us"] = latest
     for c in clips:
         c["trim_s"] = (latest - c["start_us"]) / 1e6
         c["method"] = "clock"
@@ -117,9 +131,12 @@ def main():
             slate_us = slates[0]
             found = []
             for c in clips:
-                guess = (slate_us - c["start_us"]) / 1e6
-                win0 = max(0.0, guess - 1.5)
-                audio = load_audio(c["path"], win0, 3.0)
+                if c.get("unknown"):
+                    win0, dur = 0.0, 30.0  # search the start of the clip
+                else:
+                    guess = (slate_us - c["start_us"]) / 1e6
+                    win0, dur = max(0.0, guess - 1.5), 3.0
+                audio = load_audio(c["path"], win0, dur)
                 found.append(find_slate(audio, win0))
             if all(f is not None for f in found):
                 first = min(found)
@@ -134,7 +151,7 @@ def main():
             ref_audio = load_audio(ref["path"], ref["trim_s"], 20)
             for c in clips[1:]:
                 sig = load_audio(c["path"], c["trim_s"], 20)
-                lag = xcorr_lag(ref_audio, sig)
+                lag = xcorr_lag(ref_audio, sig, max_lag_s=10.0 if c.get("unknown") else 2.0)
                 c["trim_s"] += lag
                 c["method"] = "xcorr"
             base = min(c["trim_s"] for c in clips)

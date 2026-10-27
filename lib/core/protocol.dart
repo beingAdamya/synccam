@@ -4,6 +4,7 @@ import 'dart:convert';
 class Net {
   static const int httpPort = 47810; // WebSocket control channel + HTTP uploads
   static const int udpPort = 47811; // Clock-sync pings
+  static const int httpsPort = 47812; // Browser cameras (needs the local CA)
   static const String serviceType = '_synccam._tcp';
   static const int protocolVersion = 1;
 }
@@ -33,6 +34,10 @@ class Msg {
   static const policy = 'policy';
   static const countdown = 'countdown';
   static const endSession = 'endSession';
+
+  // browser cameras: clock sync over the WebSocket (no UDP in browsers)
+  static const ping = 'ping';
+  static const pong = 'pong';
 }
 
 String encodeMsg(String type, [Map<String, dynamic>? body]) =>

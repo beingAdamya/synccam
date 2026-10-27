@@ -25,6 +25,22 @@ void main() {
     expect(client.hostToLocal(client.localToHost(42)), 42);
   });
 
+  test('after reset (reconnect to a restarted host) the old clock is forgotten', () async {
+    var skewUs = 5000000;
+    final server = ClockSyncServer(now: () => MonoClock.nowUs() + skewUs, port: 47912);
+    await server.start();
+    final client = ClockSyncClient(InternetAddress.loopbackIPv4, port: 47912);
+    await client.start();
+    await Future<void>.delayed(const Duration(milliseconds: 1000));
+    expect((client.offsetUs - 5000000).abs(), lessThan(1000));
+    skewUs = -2000000; // host restarted with a very different clock
+    client.reset();
+    await Future<void>.delayed(const Duration(milliseconds: 1000));
+    client.stop();
+    server.stop();
+    expect((client.offsetUs + 2000000).abs(), lessThan(1000), reason: 'offset ${client.offsetUs}');
+  });
+
   test('waitUntilLocal fires within 1 ms of the target', () async {
     final errors = <int>[];
     for (var i = 0; i < 10; i++) {

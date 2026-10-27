@@ -40,11 +40,45 @@ You can add a countdown (3/5/10 s). The number shows on the host and on every ca
 - Each phone can also keep its own copy in a "SyncCam" album.
 - The **Gallery** (home screen, or the host's toolbar) shows every angle side by side, with each camera's offset in ms and the overall trigger spread. You can save a whole take to Photos or share it (AirDrop, Drive, …) with its manifest.
 
+### Playback and compare
+- Every video opens with a **seek bar**: scrub, frame-by-frame step, 0.1×–2× speed, loop.
+- **Compare angles** plays every camera of a take on one timeline, lined up with each clip's measured start offset (tap the link icon to see raw clip starts). It has five modes:
+  - **Grid:** all angles at once.
+  - **Side by side:** two angles, stacked in portrait.
+  - **Wipe:** drag a divider across two angles.
+  - **Overlay:** fade one angle over another.
+  - **Switcher:** a big view plus thumbnails, like a multicam edit.
+- You pick which angle's audio you hear. Drift between players is corrected twice a second. Photos compare in the same modes.
+
+### iPhone without the app (browser camera)
+- In the host's **Add cameras** sheet, choose **iPhone, no app** and scan the QR code with the iPhone's Camera app. Safari opens a setup page on the host phone.
+- **One-time setup per iPhone:** download the host's certificate, install it (Settings → General → VPN & Device Management), then turn on full trust (Settings → General → About → Certificate Trust Settings). This is needed because Safari only allows the camera, and the secure WebSocket the page needs, on a trusted HTTPS page. A plain self-signed page loads, but its WebSocket is blocked. Each host phone makes its own small certificate authority and issues itself a certificate for its current IP addresses.
+- The browser camera uses the same protocol as the app. It gets the same live view, synced photo, burst, time-lapse and video triggers, uploads, identify, leave and end-session.
+- **Clock sync** runs over the WebSocket, so expect about ±1–3 ms on Wi-Fi. **Captures** fire with the same coarse-timer plus busy-wait approach as the app.
+- Unlike the app, live view keeps running while a browser camera records.
+- **Browser limits:**
+  - **Photos** are full-resolution frames of the video stream (up to 4K), not the camera's still pipeline.
+  - **Controls:** zoom, torch and exposure work only where Safari exposes them; anything missing is reported on the host tile. There's no flash for stills.
+  - **Foreground only:** keep the tab open and the screen on (it requests a wake lock).
+  - **Long recordings** are held in the browser's memory until you stop.
+  - **Copies:** tap "save" on the page to keep a copy on the iPhone; uploads to the host are automatic.
+
+### Wi-Fi camera leads the rig
+- Host menu → **Wi-Fi camera**: connect a **GoPro** (HERO9+, Open GoPro HTTP API), a **Canon** with CCAPI, or a **Panasonic Lumix** (`cam.cgi`).
+- With **Camera leads the phones** on, pressing record **on the camera** starts every phone, app or browser, and stopping it stops them all. Recording from SyncCam also starts the camera.
+- **Detection lag:** SyncCam polls the camera every 150–200 ms, so it sees the start within about 0.1–0.3 s and starts the phones about 0.35 s later on the shared clock. The time the start was seen is logged in the take's manifest.
+- The auto slate (beep) is recorded by the camera's microphone too. `tools/align_clips.py <take> --extra <camera clip>` then lines the camera's own file up with the phones exactly.
+- Camera and phones must share a network. Either every phone joins the camera's Wi-Fi, or the camera joins yours (GoPro Camera on Home Network, Canon infrastructure mode).
+- **Testing status:** GoPro endpoints are taken from GoPro's own Open GoPro SDK. Lumix commands come from community tools, and Canon from Canon's published CCAPI function list. All three were tested only against simulated cameras that speak the same API, not real hardware; Canon is marked experimental.
+- **Not supported:** Nikon, Sony and Fujifilm use PTP/IP or desktop SDKs over Wi-Fi.
+
 ### Camera phones
 - Join by auto-discovery (Bonjour/NSD), by scanning the host's QR code, or by typing the host's IP. They reconnect automatically if Wi-Fi drops.
 - **Updates.** On launch the app checks this repo's GitHub Releases and shows a banner when a newer version exists (Android downloads the APK; iPhone opens the release page). The host flags any camera running a different version, since mixed versions can break timing.
 - Keep-awake, plus a **dim** mode that blacks out the screen to save battery while still recording.
 - The host phone can **be a camera too**: it joins its own session over loopback.
+- If camera permission is off, the phone says so and offers **Try again** instead of spinning forever.
+- A phone that drops out mid-recording keeps recording. The host reports it, and stops it when it reconnects if the take is over.
 
 ## Running it
 
@@ -128,7 +162,12 @@ lib/
     device_health.dart  thermal / low-power / storage from native code
     updates.dart        app version, GitHub Releases update check
     widgets.dart        small shared widgets (self-ticking timers)
+    tls.dart            local certificate authority + HTTPS certs for browser cameras
   host/
+    external_camera.dart         GoPro / Canon CCAPI / Lumix drivers (poll recording state, start/stop)
+    external_camera_screen.dart  connect a Wi-Fi camera; "camera leads" switch
+    playback.dart       synced multi-clip playback engine, seek bar, single-video player
+    compare_screen.dart grid / side-by-side / wipe / overlay / switcher
     host_server.dart    HTTP+WebSocket server, device registry, capture scheduling, uploads, sync reports
     sync_panel.dart     title-bar sync chip + per-camera sync sheet
     take.dart           take model + manifest.json (timing, spread, head trims)
@@ -139,19 +178,40 @@ lib/
     camera_node.dart    camera phone: link, clock sync, camera control, timed capture, upload
     node_screen.dart    viewfinder UI on camera phones
     join_screen.dart    discovery / QR / manual join
-tools/align_clips.py    desktop: frame-align a take's videos (ffmpeg + numpy)
-test/sync_test.dart     clock-sync convergence, trigger precision, take math
+assets/web/             browser camera (index.html, app.js) and iPhone setup page
+tools/align_clips.py    desktop: frame-align a take's videos (ffmpeg + numpy); --extra for other cameras
+tool/make_icon.dart     draws the app icon
+test/                   clock sync, trigger precision, take math, TLS certificates
+                        (checked by a real TLS handshake and openssl), Wi-Fi camera drivers
+                        (against fake cameras), update check
 ```
 
 ### Protocol
 - `ws://host:47810/ws`: JSON control messages both ways. Binary frames carry live-view JPEGs from camera to host.
 - `POST http://host:47810/upload`: camera uploads a captured file (`x-take`, `x-device`, `x-shot` headers).
 - `udp://host:47811`: clock-sync ping/pong (29-byte packets).
+- `https://host:47812/`: browser camera page plus the same `/ws` and `/upload`. Browser cameras sync their clock with `ping`/`pong` messages over the WebSocket.
+- `http://host:47810/web`: iPhone setup page. `/ca.crt` is the host's CA certificate, and `/ping` is the trust check.
 - Bonjour service `_synccam._tcp` for discovery.
+
+## Prior art (researched October 2026)
+- **[RecSync](https://github.com/DFKI-SignLanguage/RecSync-android)** (Android) reaches sub-millisecond sync, but needs identical Android 10+ phones and a wired leader.
+- **[MultiCameraSync](https://apps.apple.com/bs/app/multicamerasync/id6447541517)** and **[Mobile Choreography](https://apps.apple.com/us/app/id1243391007)** work on iPhone only, and need the app installed.
+- **[Detail](https://detail.co/academy/record-two-angles)** connects two iOS devices.
+- Users trying to mix an iPhone controller with Android phones [report it fails](https://forum.blackmagicdesign.com/viewtopic.php?p=1123465). None of these mix Android, iPhone and browser cameras, or follow a DSLR.
+- **[VDO.Ninja](https://docs.vdo.ninja/getting-started/rooms)** streams phone cameras from the browser over WebRTC, but needs internet to connect and isn't a synced recorder.
+- **Wi-Fi camera APIs:**
+  - [Open GoPro](https://gopro.github.io/OpenGoPro/http) for GoPro.
+  - Canon [CCAPI function list](https://developercommunity.usa.canon.com/s/article/CCAPI-Function-List).
+  - Lumix `cam.cgi` as used by [python_lumix_control](https://github.com/palmdalian/python_lumix_control).
+  - For a future Nikon, Fuji or Sony driver: the PTP/IP libraries [camlib](https://github.com/dakmh/camlib) and [ptp-ip](https://github.com/malc0mn/ptp-ip).
+- Safari blocks WebSockets to self-signed certificates unless the certificate is installed and trusted ([code-server iPad guide](https://github.com/cdr/code-server/blob/v3.7.0/doc/ipad.md)). That's why the browser camera uses a one-time certificate install.
 
 ## Known limits and next steps
 - The Flutter `camera` plugin has no manual ISO, shutter speed or white balance. Adding these needs a small native extension (Camera2 / AVFoundation). Today, AE/AF lock + EV give consistent exposure across the rig.
 - Live view pauses while a phone is recording; its tile shows a REC card with the running time. Streaming frames during recording made phones lag (the camera plugin copies every full-resolution frame into the app), so it's off on both platforms.
 - Outside recording, live view grabs single frames at 6 fps (15 fps for the camera opened full-screen), not a continuous stream, for the same reason.
 - Large 4K videos upload over Wi-Fi after you stop recording. You can turn uploads off and collect the files from each phone's gallery instead.
+- Browser cameras need a one-time certificate install per iPhone. An install-free path would need a public HTTPS page plus WebRTC with internet-based signaling.
+- Wi-Fi camera drivers are tested against simulated cameras, not real bodies. Canon CCAPI also needs Canon's activation.
 - Ideas: automatic calibration (decode the clock from photos on-device), RAW/DNG capture, LTC timecode audio track, and remote file browser per camera.

@@ -114,6 +114,23 @@ class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
         children: [
           if (c != null && c.value.isInitialized)
             Center(child: CameraPreview(c, child: node.settings.showGrid ? const _Grid() : null))
+          else if (node.lastError != null && node.controller == null)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(node.cameraBlocked ? Icons.no_photography : Icons.error_outline, size: 48, color: Colors.white54),
+                  const SizedBox(height: 12),
+                  Text(node.lastError!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white)),
+                  const SizedBox(height: 16),
+                  FilledButton.icon(
+                    onPressed: node.retryCamera,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Try again'),
+                  ),
+                ]),
+              ),
+            )
           else
             const Center(child: CircularProgressIndicator()),
           SafeArea(child: _overlay(context)),

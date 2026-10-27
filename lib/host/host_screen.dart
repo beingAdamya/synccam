@@ -12,6 +12,7 @@ import '../node/camera_node.dart';
 import 'calibration_screen.dart';
 import 'device_detail_screen.dart';
 import 'device_tile.dart';
+import 'external_camera_screen.dart';
 import 'gallery_screen.dart';
 import 'host_server.dart';
 import 'host_settings_screen.dart';
@@ -187,12 +188,14 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
                   }
                   final page = switch (v) {
                     'rig' => RigOrderScreen(server: server),
+                    'cam' => ExternalCameraScreen(server: server),
                     'cal' => CalibrationScreen(server: server),
                     _ => HostSettingsScreen(server: server),
                   };
                   Navigator.push(context, MaterialPageRoute<void>(builder: (_) => page));
                 },
                 itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'cam', child: Text('Wi-Fi camera (GoPro, Canon, Lumix)')),
                   PopupMenuItem(value: 'rig', child: Text('Rig order & timing')),
                   PopupMenuItem(value: 'cal', child: Text('Sync calibration clock')),
                   PopupMenuItem(value: 'settings', child: Text('Capture settings')),
@@ -219,6 +222,11 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
                       'Update every phone to the same version for reliable sync.'),
                   actions: const [SizedBox()],
                 ),
+              ExternalCameraStrip(
+                server: server,
+                onTap: () => Navigator.push(
+                    context, MaterialPageRoute<void>(builder: (_) => ExternalCameraScreen(server: server))),
+              ),
               if (server.startError != null)
                 MaterialBanner(content: Text(server.startError!), actions: const [SizedBox()]),
               Expanded(
@@ -508,38 +516,78 @@ class _Shutter extends StatelessWidget {
   }
 }
 
-class _JoinInfo extends StatelessWidget {
+class _JoinInfo extends StatefulWidget {
   const _JoinInfo({required this.server, this.big = false});
   final HostServer server;
   final bool big;
 
   @override
+  State<_JoinInfo> createState() => _JoinInfoState();
+}
+
+/// How to add cameras: the app (auto-discovery or QR), or an iPhone browser
+/// with no app installed.
+class _JoinInfoState extends State<_JoinInfo> {
+  bool _web = false;
+
+  @override
   Widget build(BuildContext context) {
+    final server = widget.server;
     final ip = server.addresses.isEmpty ? null : server.addresses.first;
+    final webUrl = server.webJoinUrl;
+    final qrSize = widget.big ? 220.0 : 180.0;
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(big ? 'Waiting for cameras' : 'Add cameras', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 8),
-          const Text(
-            'On each phone open SyncCam → "Join as camera". This host appears automatically, '
-            'or scan the code below. All phones must be on the same Wi-Fi or this phone\'s hotspot.',
+          Text(widget.big ? 'Waiting for cameras' : 'Add cameras', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 12),
+          SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment(value: false, icon: Icon(Icons.phone_android), label: Text('With the app')),
+              ButtonSegment(value: true, icon: Icon(Icons.language), label: Text('iPhone, no app')),
+            ],
+            selected: {_web},
+            onSelectionChanged: (v) => setState(() => _web = v.first),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            _web
+                ? 'Scan this with the iPhone\'s Camera app and open the link in Safari. The page walks '
+                    'through a one-time certificate install, then the iPhone joins as a camera in the browser.'
+                : 'On each phone open SyncCam → "Join as camera". This host appears automatically, '
+                    'or scan the code below.',
             textAlign: TextAlign.center,
           ),
+          const SizedBox(height: 4),
+          const Text('All phones must be on the same Wi-Fi or this phone\'s hotspot.',
+              textAlign: TextAlign.center, style: TextStyle(color: Colors.white60, fontSize: 12)),
           const SizedBox(height: 16),
           if (ip != null)
             Container(
               color: Colors.white,
               padding: const EdgeInsets.all(12),
-              child: QrImageView(data: 'synccam://$ip:${Net.httpPort}', size: big ? 220 : 180),
+              child: QrImageView(data: _web ? webUrl! : 'synccam://$ip:${Net.httpPort}', size: qrSize),
             ),
           const SizedBox(height: 12),
           if (server.addresses.isEmpty)
             const Text('No network found. Connect to Wi-Fi or turn on a hotspot.',
                 style: TextStyle(color: Colors.orange))
-          else
+          else if (_web) ...[
+            SelectableText(webUrl!, textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleMedium),
+            if (server.httpsError != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(server.httpsError!, style: const TextStyle(color: Colors.orange)),
+              ),
+            if (server.caFingerprint case final fp?)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text('Certificate fingerprint: ${fp.substring(0, 23)}…',
+                    style: const TextStyle(color: Colors.white38, fontSize: 11)),
+              ),
+          ] else
             SelectableText(server.addresses.map((a) => '$a:${Net.httpPort}').join('\n'),
                 textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleMedium),
         ],

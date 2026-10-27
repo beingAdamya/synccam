@@ -62,6 +62,10 @@ class Take {
   final List<int> slates = [];
   String label = '';
 
+  /// The Wi-Fi camera that led this take, if any: model, and when its
+  /// recording start was seen (host clock).
+  Map<String, dynamic>? external;
+
   static Take create(Directory root, String kind, int scheduledUs, int staggerMs, List<TakeDevice> devices) {
     final now = DateTime.now();
     String two(int v) => v.toString().padLeft(2, '0');
@@ -143,6 +147,7 @@ class Take {
         'devices': devices.map((d) => d.toJson()).toList(),
         'items': items.map((i) => i.toJson()).toList(),
         'slatesHostUs': slates,
+        if (external != null) 'externalCamera': external,
         'headTrimsMs': headTrimsMs(),
         'spreadMs': {for (var s = 0; s < shots; s++) '$s': spreadMs(s)},
       };
@@ -171,6 +176,7 @@ class Take {
           [for (final d in (j['devices'] as List)) TakeDevice.fromJson((d as Map).cast<String, dynamic>())],
         );
         t.label = j['label'] as String? ?? '';
+        t.external = (j['externalCamera'] as Map?)?.cast<String, dynamic>();
         for (final i in (j['items'] as List)) {
           t.items.add(TakeItem.fromJson((i as Map).cast<String, dynamic>()));
         }

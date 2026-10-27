@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.2.1+3
+version: 0.3.0+4
 
 environment:
   sdk: ^3.13.5
@@ -50,7 +50,7 @@ dependencies:
   shared_preferences: ^2.5.6
   package_info_plus: ^10.2.2
   url_launcher: ^6.3.3
-
+  pointycastle: ^4.0.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -61,6 +61,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -72,6 +73,10 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  # Browser camera client served by the host to iPhones without the app.
+  assets:
+    - assets/web/
 
   # To add assets to your application, add an assets section, like this:
   # assets:
@@ -103,3 +108,13 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+# App icon, generated from tool/make_icon.dart. Regenerate:
+#   dart run tool/make_icon.dart && dart run flutter_launcher_icons
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/icon/icon.png
+  adaptive_icon_background: "#16161A"
+  adaptive_icon_foreground: assets/icon/foreground.png
+  remove_alpha_ios: true

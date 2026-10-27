@@ -165,6 +165,14 @@ class ClockSyncClient {
     onUpdate?.call();
   }
 
+  /// Forget all measurements, e.g. after reconnecting to a possibly
+  /// restarted host, so stale samples can't skew the offset.
+  void reset() {
+    _samples.clear();
+    bestRttUs = 0;
+    _burst(30, 25);
+  }
+
   Future<void> restart() async {
     stop();
     _samples.clear();
