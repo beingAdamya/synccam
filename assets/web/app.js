@@ -44,7 +44,9 @@ function onPong(m) {
   renderSync();
 }
 function pingBurst(n, gap) {
-  for (let i = 0; i < n; i++) setTimeout(() => send('ping', { c: nowUs() }), i * gap);
+  for (let i = 0; i < n; i++) {
+    setTimeout(() => { if (link && link.isOpen()) link.sendClock(JSON.stringify({ t: 'ping', c: nowUs() })); }, i * gap);
+  }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -61,34 +63,45 @@ async function waitUntilHost(hostUs) {
 }
 
 // ---------------------------------------------------------------- link
-let ws = null, ended = null, reconnectTimer = null;
-let sessionName = S.session, slot = 0;
+// The page reaches the host one of two ways (transport.js):
+//  - 'ws':  served by the host itself over HTTPS (certificate route, offline)
+//  - 'rtc': served from GitHub Pages; WebRTC data channels, found through an
+//           end-to-end encrypted relay (no certificate, needs internet to join)
+let link = null, ended = null, reconnectTimer = null;
+const JOIN = SyncLinks.joinParams();
+let sessionName = JOIN.session || S.session, slot = 0;
+if (JOIN.session) document.getElementById('sessionLabel').textContent = JOIN.session;
 function send(t, body) {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t, ...body }));
+  if (link && link.isOpen()) link.send(JSON.stringify({ t, ...body }));
 }
+let started = false; // set once the user pressed Start camera
 function connect() {
-  if (ended) return;
+  if (ended || link) return;
   setLink('connecting');
-  // wss on the real (HTTPS) page; ws only for local testing on http://localhost.
-  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
-  ws.binaryType = 'arraybuffer';
-  ws.onopen = () => {
-    // A reconnect may reach a restarted host whose clock differs: never
-    // reuse samples measured against the previous connection.
-    clock.samples = [];
-    setLink('connected');
-    send('hello', { id: ID, name, platform: 'web', model: deviceModel(), v: S.protocol, app: S.version });
-    sendCaps();
-    pingBurst(30, 25);
-  };
-  ws.onmessage = (e) => { if (typeof e.data === 'string') onMessage(JSON.parse(e.data)); };
-  ws.onclose = () => {
-    ws = null;
-    if (ended) return;
-    setLink('disconnected');
-    clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(connect, 2000);
-  };
+  const make = S.mode === 'rtc' ? SyncLinks.rtc : SyncLinks.ws;
+  link = make({
+    camId: ID,
+    join: JOIN,
+    onStatus: (text) => { $('linkText').textContent = text; },
+    onOpen: () => {
+      // A reconnect may reach a restarted host whose clock differs: never
+      // reuse samples measured against the previous connection.
+      clock.samples = [];
+      setLink('connected');
+      send('hello', { id: ID, name, platform: 'web', model: deviceModel(), v: S.protocol, app: S.version });
+      sendCaps();
+      pingBurst(30, 25);
+    },
+    onText: (text) => onMessage(JSON.parse(text)),
+    onClose: (why) => {
+      link = null;
+      if (ended) return;
+      if (why) lastError = why;
+      setLink('disconnected');
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, 3000);
+    },
+  });
 }
 setInterval(() => pingBurst(8, 30), 2000);
 setInterval(sendStatus, 2000);
@@ -105,7 +118,25 @@ const RES = { low: [320, 240], medium: [640, 480], high: [1280, 720], veryHigh: 
 let stream = null, settings = { lens: 'back', resolution: 'veryHigh', enableAudio: true, zoom: 1, flash: 'off', exposureOffset: 0 };
 let caps = {}, lastError = null, cameraReady = false;
 
-async function openCamera(s) {
+let opening = Promise.resolve();
+function openCamera(s) {
+  // One (re)open at a time: settings can arrive while the camera starts.
+  const run = opening.then(() => openCameraNow(s));
+  opening = run.catch(() => {});
+  return run;
+}
+
+// Resolves when the <video> shows frames, or fails after [ms].
+async function videoReady(ms) {
+  // Poll rather than wait for one event, which a backgrounded tab can miss.
+  for (let t = 0; t < ms; t += 50) {
+    if (video.readyState >= 2 && video.videoWidth) return;
+    await sleep(50);
+  }
+  throw new Error('the camera did not start');
+}
+
+async function openCameraNow(s) {
   cameraReady = false;
   if (stream) stream.getTracks().forEach((t) => t.stop());
   const [w, h] = RES[s.resolution] || RES.veryHigh;
@@ -120,7 +151,8 @@ async function openCamera(s) {
   }
   video.srcObject = stream;
   video.style.transform = s.lens === 'front' ? 'scaleX(-1)' : '';
-  await video.play();
+  video.play().catch(() => {}); // muted inline video; readiness is checked below
+  await videoReady(5000);
   const track = stream.getVideoTracks()[0];
   caps = (track.getCapabilities && track.getCapabilities()) || {};
   cameraReady = true;
@@ -128,7 +160,12 @@ async function openCamera(s) {
   sendCaps();
 }
 
-const needsReopen = (a, b) => a.lens !== b.lens || a.resolution !== b.resolution || a.fps !== b.fps || a.enableAudio !== b.enableAudio;
+// Only these need a new camera stream. Compare loosely: the host sends
+// null for "auto" where this page starts with undefined, and restarting the
+// camera on every join would flicker and delay the first shot.
+const needsReopen = (a, b) => (a.lens || 'back') !== (b.lens || 'back') ||
+  (a.resolution || 'veryHigh') !== (b.resolution || 'veryHigh') ||
+  (a.fps || 0) !== (b.fps || 0) || (a.enableAudio !== false) !== (b.enableAudio !== false);
 
 async function applySettings(next) {
   const prev = settings;
@@ -188,8 +225,8 @@ function restartPreview() {
   previewTimer = setInterval(grabPreview, 1000 / Math.max(1, preview.fps));
 }
 function grabPreview() {
-  if (!preview.on || preview.busy || !cameraReady || !ws || ws.readyState !== 1 || !video.videoWidth) return;
-  if (ws.bufferedAmount > 512 * 1024) return; // network is behind: skip a frame
+  if (!preview.on || preview.busy || !cameraReady || !link || !link.isOpen() || !video.videoWidth) return;
+  if (link.previewBacklog() > 512 * 1024) return; // network is behind: skip a frame
   const k = preview.max / Math.max(video.videoWidth, video.videoHeight);
   small.width = Math.round(video.videoWidth * k);
   small.height = Math.round(video.videoHeight * k);
@@ -200,11 +237,11 @@ function grabPreview() {
   preview.busy = true;
   small.toBlob(async (b) => {
     try {
-      if (b && ws && ws.readyState === 1) {
+      if (b && link && link.isOpen()) {
         const jpeg = new Uint8Array(await b.arrayBuffer());
         const out = new Uint8Array(jpeg.length + 2);
         out[0] = 0x53; out[1] = 1; out.set(jpeg, 2);
-        ws.send(out);
+        link.sendPreview(out);
       }
     } finally { preview.busy = false; }
   }, 'image/jpeg', preview.q);
@@ -225,13 +262,28 @@ function snapshotBlob(quality) {
   return new Promise((r) => c.toBlob(r, 'image/jpeg', quality));
 }
 
+// A trigger that fires more than a frame late is not in sync: say so, so
+// the host can flag this camera instead of silently mixing it in.
+function reportIfLate(take, lateUs) {
+  if (lateUs > 40000) send('error', { take, msg: `fired ${(lateUs / 1000).toFixed(0)} ms late (camera was busy)`, lateMs: lateUs / 1000 });
+}
+
+// Settings may be reopening the camera when a trigger arrives; wait briefly.
+async function whenCameraReady(ms = 2500) {
+  for (let t = 0; !cameraReady && t < ms; t += 50) await sleep(50);
+  return cameraReady;
+}
+
 async function capturePhotos(m) {
+  await whenCameraReady();
   if (!cameraReady || recorder) return send('error', { take: m.take, msg: recorder ? 'busy recording' : 'camera not ready' });
   countdown(m.at);
   const results = [];
   for (let k = 0; k < (m.count || 1); k++) {
-    await waitUntilHost(m.at + k * (m.interval || 0) * 1000);
+    const due = m.at + k * (m.interval || 0) * 1000;
+    await waitUntilHost(due);
     const called = hostNow();
+    reportIfLate(m.take, called - due);
     const blob = snapshotBlob((settings.jpegQuality || 95) / 100);
     results.push({ blob, shot: (m.shot || 0) + k, called, returned: hostNow() });
     if (k === 0) countdown(null);
@@ -258,7 +310,11 @@ function pickMime() {
 }
 
 async function startVideo(m) {
-  if (!cameraReady || recorder) return;
+  await whenCameraReady();
+  if (!cameraReady || recorder) {
+    if (!recorder) send('error', { take: m.take, msg: 'camera not ready' });
+    return;
+  }
   countdown(m.at);
   recMime = pickMime();
   recChunks = [];
@@ -268,6 +324,7 @@ async function startVideo(m) {
   const started = new Promise((res) => { r.onstart = () => { recStartReturned = hostNow(); res(); }; });
   await waitUntilHost(m.at);
   recStartCalled = hostNow();
+  reportIfLate(m.take, recStartCalled - m.at);
   try {
     r.start(1000);
     recorder = r;
@@ -316,11 +373,7 @@ async function deliver(blob, take, shot, kind, ext) {
   render();
   for (let a = 0; a < 3; a++) {
     try {
-      const r = await fetch('/upload', {
-        method: 'POST', body: blob,
-        headers: { 'x-device': ID, 'x-take': take, 'x-shot': String(shot), 'x-kind': kind, 'x-ext': ext },
-      });
-      if (r.ok) break;
+      if (link && await link.upload(blob, { device: ID, take, shot, kind, ext })) break;
     } catch (e) { lastError = 'upload: ' + e.message; }
     await sleep(2000 << a);
   }
@@ -406,7 +459,7 @@ function end(by) {
   $('endedTitle').textContent = by === 'host' ? 'Session ended by host' : 'You left the session';
   $('endedText').textContent = copies.length ? 'Tap "save" below the camera to keep copies on this iPhone.' : '';
   $('ended').classList.add('show');
-  setTimeout(() => ws && ws.close(), 300);
+  setTimeout(() => link && link.close(), 300);
 }
 
 $('leave').onclick = () => {
@@ -437,7 +490,7 @@ async function keepAwake() {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     keepAwake();
-    if (!ended && (!ws || ws.readyState > 1)) connect();
+    if (started && !ended && !link) connect();
   }
 });
 
@@ -459,6 +512,7 @@ $('startBtn').onclick = async () => {
   $('start').style.display = 'none';
   keepAwake();
   restartPreview();
+  started = true;
   connect();
   render();
 };

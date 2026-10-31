@@ -554,6 +554,7 @@ class CameraNode extends ChangeNotifier {
       final t = targetLocal + k * intervalMs * 1000;
       await waitUntilLocal(t);
       final called = _hostNow();
+      _reportIfLate(take, MonoClock.nowUs() - t);
       try {
         final f = await c.takePicture();
         results.add((f, shot + k, called, _hostNow()));
@@ -593,6 +594,7 @@ class CameraNode extends ChangeNotifier {
       await c.prepareForVideoRecording();
     } catch (_) {}
     await waitUntilLocal(_toLocal(atHostUs));
+    _reportIfLate(take, MonoClock.nowUs() - _toLocal(atHostUs));
     _recScheduledHost = atHostUs;
     _recStartCalledHost = _hostNow();
     try {
@@ -646,6 +648,14 @@ class CameraNode extends ChangeNotifier {
     await _resumeLive();
     notifyListeners();
     _sendStatus();
+  }
+
+  /// A trigger that fires more than a frame late is not in sync: tell the
+  /// host so it flags this camera instead of silently mixing it in.
+  void _reportIfLate(String take, int lateUs) {
+    if (lateUs > 40000) {
+      _send(Msg.error, {'take': take, 'msg': 'fired ${lateUs ~/ 1000} ms late (camera was busy)', 'lateMs': lateUs / 1000});
+    }
   }
 
   /// Saves to the phone's gallery and/or uploads to the host, off the

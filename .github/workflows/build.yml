@@ -114,10 +114,43 @@ jobs:
 
           **iPhone:** \`SyncCam-$TAG-ios-unsigned.ipa\` is not signed, so iOS won't install it as is. Either sign it on your computer with your Apple ID using Sideloadly or AltStore (free account: the app expires after 7 days), or use \`codemagic.yaml\` to get a signed TestFlight build.
 
-          **iPhone without installing anything:** on the host phone open Add cameras → "iPhone, no app" and scan the QR code with the iPhone. A one-time certificate setup in Settings lets Safari use the camera.
+          **iPhone without installing anything:** on the host phone open Add cameras → "iPhone, no app" and scan the QR code with the iPhone Camera app. No certificate needed; internet only while joining. (No internet? Use the "Offline" tab, which needs a one-time certificate install.)
 
           Not yet tested on physical devices.
           NOTES
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "SyncCam $TAG" \
             --notes-file notes.md --prerelease \
             "SyncCam-$TAG-android.apk" "SyncCam-$TAG-ios-unsigned.ipa"
+
+  # The browser camera page for iPhones (no app, no certificate) is served
+  # from GitHub Pages, built from the same assets/web files the host serves.
+  pages:
+    if: github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build camera page
+        run: |
+          VERSION=$(grep -m1 '^version:' pubspec.yaml | sed 's/version: //; s/+.*//')
+          PROTOCOL=$(grep -oP 'protocolVersion = \K[0-9]+' lib/core/protocol.dart)
+          mkdir -p site/cam
+          sed -e "s/{{MODE}}/rtc/; s/{{VERSION}}/$VERSION/; s/{{PROTOCOL}}/$PROTOCOL/; s/{{SESSION}}//g" \
+            assets/web/index.html > site/cam/index.html
+          cp assets/web/app.js assets/web/transport.js site/cam/
+          printf '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=https://github.com/%s">SyncCam' \
+            "$GITHUB_REPOSITORY" > site/index.html
+          touch site/.nojekyll
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

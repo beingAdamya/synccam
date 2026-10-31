@@ -16,7 +16,35 @@ import '../core/tls.dart';
 import '../core/updates.dart';
 import '../core/util.dart';
 import 'external_camera.dart';
+import 'rtc_link.dart';
 import 'take.dart';
+
+/// How the host talks to one camera: a WebSocket (app, certificate-route
+/// browser) or WebRTC data channels (browser page from GitHub Pages).
+abstract class DeviceLink {
+  void sendText(String text);
+  void close();
+}
+
+class WsLink implements DeviceLink {
+  WsLink(this.ws);
+  final WebSocket ws;
+  @override
+  void sendText(String text) => ws.add(text);
+  @override
+  void close() => ws.close();
+}
+
+/// Callbacks a transport feeds a link's traffic into.
+class LinkInput {
+  LinkInput(this.onText, this.onBinary, this.onClosed);
+
+  /// A JSON control message; [reply] answers on the same channel (clock
+  /// pongs must go back on the low-latency channel they came from).
+  final void Function(String text, void Function(String) reply) onText;
+  final void Function(Uint8List data) onBinary;
+  final void Function() onClosed;
+}
 
 /// A phone connected to this host as a camera.
 class RemoteDevice extends ChangeNotifier {
@@ -31,8 +59,8 @@ class RemoteDevice extends ChangeNotifier {
   /// App version the camera reported; null for builds before 0.2.0.
   String? appVersion;
   int protocol = Net.protocolVersion;
-  WebSocket? ws;
-  bool get online => ws != null;
+  DeviceLink? link;
+  bool get online => link != null;
 
   int slot = 0;
 
@@ -90,7 +118,7 @@ class RemoteDevice extends ChangeNotifier {
 
   void send(String type, [Map<String, dynamic>? body]) {
     try {
-      ws?.add(encodeMsg(type, body));
+      link?.sendText(encodeMsg(type, body));
     } catch (_) {}
   }
 
@@ -169,6 +197,9 @@ class HostServer extends ChangeNotifier {
   /// own record button starts and stops every phone.
   ExternalCamera? external;
   bool externalLeads = true;
+
+  /// Joins from the GitHub Pages camera page (no certificate needed).
+  late final RtcGateway rtc = RtcGateway(server: this)..addListener(notifyListeners);
   final StreamController<CaptureReport> _reports = StreamController.broadcast();
   Stream<CaptureReport> get reports => _reports.stream;
   int _activeUploads = 0;
@@ -192,6 +223,7 @@ class HostServer extends ChangeNotifier {
       debugPrint('audio context: $e');
     }
     await _bindNetwork();
+    unawaited(rtc.start());
     final saved = _prefs?.getString('external');
     if (saved != null) {
       externalLeads = _prefs?.getBool('external.leads') ?? true;
@@ -250,7 +282,7 @@ class HostServer extends ChangeNotifier {
   }
 
   static Future<Map<String, String>> _loadWebAssets() async => {
-        for (final f in const ['index.html', 'app.js', 'setup.html']) f: await rootBundle.loadString('assets/web/$f'),
+        for (final f in const ['index.html', 'app.js', 'transport.js', 'setup.html']) f: await rootBundle.loadString('assets/web/$f'),
       };
 
   /// Link an iPhone opens (plain HTTP) to set up trust and reach the camera page.
@@ -273,9 +305,10 @@ class HostServer extends ChangeNotifier {
   void dispose() {
     _intervalTimer?.cancel();
     for (final d in _devices.values) {
-      d.ws?.close();
+      d.link?.close();
     }
     external?.dispose();
+    rtc.dispose();
     _http?.close(force: true);
     _https?.close(force: true);
     _ipWatch?.cancel();
@@ -322,8 +355,8 @@ class HostServer extends ChangeNotifier {
           await _sendPage(req, 'setup.html');
         case '/' when req.requestedUri.scheme == 'https':
           await _sendPage(req, 'index.html');
-        case '/app.js':
-          await _sendPage(req, 'app.js', type: ContentType('text', 'javascript', charset: 'utf-8'));
+        case '/app.js' || '/transport.js':
+          await _sendPage(req, req.uri.path.substring(1), type: ContentType('text', 'javascript', charset: 'utf-8'));
         case '/':
           // Plain HTTP root: send browsers to the setup page.
           req.response
@@ -350,6 +383,7 @@ class HostServer extends ChangeNotifier {
         .replaceAll('{{SESSION}}', esc(sessionName).replaceAll("'", '&#39;'))
         .replaceAll('{{VERSION}}', AppVersion.current)
         .replaceAll('{{PROTOCOL}}', '${Net.protocolVersion}')
+        .replaceAll('{{MODE}}', 'ws')
         .replaceAll('{{HTTPS_PORT}}', '${Net.httpsPort}')
         .replaceAll('{{FINGERPRINT}}', _ca?.fingerprint ?? '');
     req.response
@@ -360,36 +394,50 @@ class HostServer extends ChangeNotifier {
   }
 
   void _onSocket(WebSocket ws, String? ip) {
-    RemoteDevice? dev;
+    final link = WsLink(ws);
+    final input = attachLink(link, ip);
     ws.listen(
       (data) {
-        final receivedUs = nowUs();
-        if (data is Uint8List || data is List<int>) {
-          final b = data is Uint8List ? data : Uint8List.fromList(data as List<int>);
-          if (dev != null && b.length > 2 && b[0] == PreviewFrame.magic && b[1] == PreviewFrame.kindJpeg) {
-            dev!.onFrame(Uint8List.sublistView(b, 2));
-          }
-          return;
-        }
-        final m = jsonDecode(data as String) as Map<String, dynamic>;
-        if (m['t'] == Msg.ping) {
-          // NTP-style reply for browser cameras: receive and send times.
-          ws.add(encodeMsg(Msg.pong, {'c': m['c'], 'h1': receivedUs, 'h2': nowUs()}));
-          return;
-        }
-        if (m['t'] == Msg.hello) {
-          dev = _onHello(ws, m, ip);
-        } else if (dev != null) {
-          _onDeviceMessage(dev!, m);
+        if (data is String) {
+          input.onText(data, ws.add);
+        } else {
+          input.onBinary(data is Uint8List ? data : Uint8List.fromList(data as List<int>));
         }
       },
-      onDone: () => _onSocketClosed(dev, ws),
-      onError: (_) => _onSocketClosed(dev, ws),
+      onDone: input.onClosed,
+      onError: (_) => input.onClosed(),
       cancelOnError: true,
     );
   }
 
-  RemoteDevice _onHello(WebSocket ws, Map<String, dynamic> m, String? ip) {
+  /// Connects a camera's link (any transport) to the host's logic.
+  LinkInput attachLink(DeviceLink link, String? ip) {
+    RemoteDevice? dev;
+    return LinkInput(
+      (text, reply) {
+        final receivedUs = nowUs();
+        final m = jsonDecode(text) as Map<String, dynamic>;
+        if (m['t'] == Msg.ping) {
+          // NTP-style reply for browser cameras: receive and send times.
+          reply(encodeMsg(Msg.pong, {'c': m['c'], 'h1': receivedUs, 'h2': nowUs()}));
+          return;
+        }
+        if (m['t'] == Msg.hello) {
+          dev = _onHello(link, m, ip);
+        } else if (dev != null) {
+          _onDeviceMessage(dev!, m);
+        }
+      },
+      (b) {
+        if (dev != null && b.length > 2 && b[0] == PreviewFrame.magic && b[1] == PreviewFrame.kindJpeg) {
+          dev!.onFrame(Uint8List.sublistView(b, 2));
+        }
+      },
+      () => _onSocketClosed(dev, link),
+    );
+  }
+
+  RemoteDevice _onHello(DeviceLink link, Map<String, dynamic> m, String? ip) {
     final id = m['id'] as String;
     final isNew = !_devices.containsKey(id);
     // The same phone rejoining under a new id (reinstalled app, cleared
@@ -397,8 +445,8 @@ class HostServer extends ChangeNotifier {
     final stale = isNew ? _findStale(m, ip) : null;
     final d = _devices.putIfAbsent(id, () => RemoteDevice(id));
     d.lastIp = ip ?? d.lastIp;
-    d.ws?.close();
-    d.ws = ws;
+    d.link?.close();
+    d.link = link;
     d.name = m['name'] as String? ?? d.name;
     d.platform = m['platform'] as String? ?? '';
     d.model = m['model'] as String? ?? '';
@@ -441,15 +489,15 @@ class HostServer extends ChangeNotifier {
 
   bool _slotTaken(RemoteDevice d) => _devices.values.any((x) => x != d && x.slot == d.slot);
 
-  void _onSocketClosed(RemoteDevice? d, WebSocket ws) {
-    if (d == null || d.ws != ws) return;
+  void _onSocketClosed(RemoteDevice? d, DeviceLink link) {
+    if (d == null || d.link != link) return;
     if (d.recording && !_reports.isClosed) {
       _reports.add(CaptureReport(
           '${d.name} lost connection while recording. It keeps recording, and SyncCam stops it '
           'when it reconnects if the take is over.',
           ok: false));
     }
-    d.ws = null;
+    d.link = null;
     d.recording = false;
     d.changed();
     notifyListeners();
@@ -500,6 +548,9 @@ class HostServer extends ChangeNotifier {
         notifyListeners();
       case Msg.error:
         d.error = m['msg'] as String?;
+        if (m['lateMs'] != null && !_reports.isClosed) {
+          _reports.add(CaptureReport('${d.name} ${d.error}. Its shot is out of sync.', ok: false));
+        }
         d.changed();
         notifyListeners();
     }
@@ -507,18 +558,35 @@ class HostServer extends ChangeNotifier {
 
   Future<void> _onUpload(HttpRequest req) async {
     final h = req.headers;
-    final deviceId = h.value('x-device') ?? '';
-    final take = library.byId(h.value('x-take'));
+    final ok = await storeUpload(
+      deviceId: h.value('x-device') ?? '',
+      takeId: h.value('x-take'),
+      shot: int.tryParse(h.value('x-shot') ?? '') ?? 0,
+      ext: h.value('x-ext') ?? 'bin',
+      data: req.cast<List<int>>(),
+    );
+    req.response.statusCode = ok ? 200 : 404;
+    await req.response.close();
+  }
+
+  /// Stores one captured file into its take. False if the take or camera is
+  /// unknown. Used by HTTP uploads and WebRTC file channels alike.
+  Future<bool> storeUpload({
+    required String deviceId,
+    required String? takeId,
+    required int shot,
+    required String ext,
+    required Stream<List<int>> data,
+  }) async {
+    final take = library.byId(takeId);
     // The camera may already have left; its take record still knows it.
     final d = _devices[deviceId];
     final td = take?.device(deviceId);
     if (take == null || (d == null && td == null)) {
-      req.response.statusCode = 404;
-      await req.response.close();
-      return;
+      await data.drain<void>();
+      return false;
     }
-    final shot = int.tryParse(h.value('x-shot') ?? '') ?? 0;
-    final ext = (h.value('x-ext') ?? 'bin').replaceAll(RegExp(r'[^A-Za-z0-9]'), '');
+    ext = ext.replaceAll(RegExp(r'[^A-Za-z0-9]'), '');
     final name = d?.name ?? td!.name;
     final slot = d?.slot ?? td!.slot;
     final safeName = name.replaceAll(RegExp(r'[^A-Za-z0-9_-]+'), '_');
@@ -529,16 +597,15 @@ class HostServer extends ChangeNotifier {
     _activeUploads++;
     notifyListeners();
     try {
-      await req.cast<List<int>>().pipe(file.openWrite());
+      await data.pipe(file.openWrite());
     } finally {
       _activeUploads--;
     }
     take.attachFile(deviceId, shot, fileName);
     await take.save();
-    req.response.statusCode = 200;
-    await req.response.close();
     library.changed();
     notifyListeners();
+    return true;
   }
 
   // ------------------------------------------------------------ settings
@@ -631,7 +698,7 @@ class HostServer extends ChangeNotifier {
   }
 
   void removeDevice(RemoteDevice d) {
-    d.ws?.close();
+    d.link?.close();
     _devices.remove(d.id);
     notifyListeners();
   }

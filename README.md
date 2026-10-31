@@ -51,26 +51,45 @@ You can add a countdown (3/5/10 s). The number shows on the host and on every ca
 - You pick which angle's audio you hear. Drift between players is corrected twice a second. Photos compare in the same modes.
 
 ### iPhone without the app (browser camera)
-- In the host's **Add cameras** sheet, choose **iPhone, no app** and scan the QR code with the iPhone's Camera app. Safari opens a setup page on the host phone.
-- **One-time setup per iPhone:** download the host's certificate, install it (Settings → General → VPN & Device Management), then turn on full trust (Settings → General → About → Certificate Trust Settings). This is needed because Safari only allows the camera, and the secure WebSocket the page needs, on a trusted HTTPS page. A plain self-signed page loads, but its WebSocket is blocked. Each host phone makes its own small certificate authority and issues itself a certificate for its current IP addresses.
-- The browser camera uses the same protocol as the app. It gets the same live view, synced photo, burst, time-lapse and video triggers, uploads, identify, leave and end-session.
-- **Clock sync** runs over the WebSocket, so expect about ±1–3 ms on Wi-Fi. **Captures** fire with the same coarse-timer plus busy-wait approach as the app.
-- Unlike the app, live view keeps running while a browser camera records.
+- **No app, no certificate (default):** in the host's **Add cameras** sheet choose **iPhone, no app** and scan the QR code with the iPhone's Camera app. Safari opens the SyncCam camera page on GitHub Pages; tap **Start camera**.
+  - **How it connects:** the page and the host find each other through a public MQTT relay, exchanging one offer and one answer. They then talk **directly over WebRTC on your Wi-Fi**: commands, clock sync, live view and file uploads.
+  - **What the relay sees:** only AES-256-GCM ciphertext. The key travels in the QR code's `#fragment`, which browsers never send to a server.
+  - **Internet:** needed only while joining. A phone hotspot with mobile data works.
+- **Offline (certificate route):** the **Offline** tab serves the page from the host phone itself. It needs a one-time certificate install per iPhone (Settings → General → VPN & Device Management, then Settings → General → About → Certificate Trust Settings), because Safari only allows the camera, and the secure connection the page needs, on a trusted HTTPS page.
+- Both routes run the same page and protocol as the app: live view, synced photo, burst, time-lapse and video triggers, uploads, identify, leave and end-session. Clock sync is about ±1–3 ms on Wi-Fi.
+- **Late triggers:** if a camera fires late (for example because it was still restarting), it reports it and the host flags it.
 - **Browser limits:**
-  - **Photos** are full-resolution frames of the video stream (up to 4K), not the camera's still pipeline.
-  - **Controls:** zoom, torch and exposure work only where Safari exposes them; anything missing is reported on the host tile. There's no flash for stills.
-  - **Foreground only:** keep the tab open and the screen on (it requests a wake lock).
+  - **Photos** are full-resolution frames of the video stream, not the camera's still pipeline.
+  - **Controls:** zoom, torch and exposure work only where Safari exposes them.
+  - **Foreground only:** keep the tab open and the screen on.
   - **Long recordings** are held in the browser's memory until you stop.
-  - **Copies:** tap "save" on the page to keep a copy on the iPhone; uploads to the host are automatic.
 
-### Wi-Fi camera leads the rig
-- Host menu → **Wi-Fi camera**: connect a **GoPro** (HERO9+, Open GoPro HTTP API), a **Canon** with CCAPI, or a **Panasonic Lumix** (`cam.cgi`).
-- With **Camera leads the phones** on, pressing record **on the camera** starts every phone, app or browser, and stopping it stops them all. Recording from SyncCam also starts the camera.
-- **Detection lag:** SyncCam polls the camera every 150–200 ms, so it sees the start within about 0.1–0.3 s and starts the phones about 0.35 s later on the shared clock. The time the start was seen is logged in the take's manifest.
-- The auto slate (beep) is recorded by the camera's microphone too. `tools/align_clips.py <take> --extra <camera clip>` then lines the camera's own file up with the phones exactly.
-- Camera and phones must share a network. Either every phone joins the camera's Wi-Fi, or the camera joins yours (GoPro Camera on Home Network, Canon infrastructure mode).
-- **Testing status:** GoPro endpoints are taken from GoPro's own Open GoPro SDK. Lumix commands come from community tools, and Canon from Canon's published CCAPI function list. All three were tested only against simulated cameras that speak the same API, not real hardware; Canon is marked experimental.
-- **Not supported:** Nikon, Sony and Fujifilm use PTP/IP or desktop SDKs over Wi-Fi.
+### Dedicated cameras: every brand (host menu → Camera link)
+Pick the camera, enter its IP and connect. Every camera can be synced by sound. Most can also be started by SyncCam, and many can lead: pressing record on the camera starts every phone, app or browser.
+
+| Brand | Protocol | Camera's REC starts the phones | SyncCam starts the camera |
+|---|---|---|---|
+| GoPro HERO9+ | Open GoPro HTTP | ✓ | ✓ |
+| Canon EOS / PowerShot | CCAPI (HTTP) | ✓ | ✓ |
+| Canon EOS (no CCAPI) | PTP/IP, EOS ops | ✓ | ✓ |
+| Nikon Z / DSLR | PTP/IP, Nikon movie ops and events | ✓ | ✓ |
+| Sony Alpha / FX (current) | PTP/IP "PC Remote" | ✓ (if the body reports its state) | ✓ |
+| Sony Alpha / RX (older) | Camera Remote API (JSON-RPC) | ✓ | ✓ |
+| Panasonic Lumix | `cam.cgi` | ✓ | ✓ |
+| Blackmagic Cinema/Studio/URSA/PYXIS | Official REST API | ✓ | ✓ |
+| Ricoh Theta, Insta360, other 360° | OSC (open standard) | ✓ | ✓ |
+| Fujifilm X / GFX | PTP/IP, Fuji movie ops | – | ✓ |
+| OM System / Olympus | Wi-Fi CGI | – | ✓ |
+| Pentax, Leica, Sigma, other PTP/IP | Standard PTP open capture | – | ✓ |
+| **Any camera** | **Sync by sound**: no connection | – | – |
+
+- **Timing:** SyncCam polls (or listens for events) every 150–250 ms and starts the phones about 0.35 s after it sees the camera start, on the shared clock. The host's slate beep is on every recording, including the camera's own, so `tools/align_clips.py <take> --extra <camera clip>` lines the camera's file up with the phones to the frame.
+- **Connection log:** every request and answer is listed under **Connection log**, with a Copy button, so a camera that misbehaves shows exactly what it said.
+- **How it's built:**
+  - **Official or vendor sources:** GoPro and Blackmagic come from the makers' official APIs. Nikon, Canon, Sony and Fujifilm PTP codes come from libgphoto2.
+  - **Community and open sources:** Lumix, Sony Remote API and OM System from community documentation, and OSC from Google's open spec.
+- **Testing:** each driver passes tests against a simulated camera speaking its protocol. The PTP/IP ones use a fake camera implementing PTP/IP over real TCP. They have not yet been tested on physical cameras; the connection log is there for that first test.
+- **Not reachable:** DJI Osmo and other closed-protocol cameras. Use sync by sound for those.
 
 ### Camera phones
 - Join by auto-discovery (Bonjour/NSD), by scanning the host's QR code, or by typing the host's IP. They reconnect automatically if Wi-Fi drops.
@@ -163,8 +182,12 @@ lib/
     updates.dart        app version, GitHub Releases update check
     widgets.dart        small shared widgets (self-ticking timers)
     tls.dart            local certificate authority + HTTPS certs for browser cameras
+    seal.dart           AES-256-GCM envelopes for relay messages (matches the browser's WebCrypto)
   host/
-    external_camera.dart         GoPro / Canon CCAPI / Lumix drivers (poll recording state, start/stop)
+    external_camera.dart         camera link: brands, capabilities, HTTP drivers, connection log
+    ptpip.dart                   PTP/IP transport (command + event channels, transactions)
+    ptp_cameras.dart             Nikon, Canon EOS, Sony, Fujifilm and generic PTP drivers
+    rtc_link.dart                WebRTC gateway for the GitHub Pages camera page (relay + data channels)
     external_camera_screen.dart  connect a Wi-Fi camera; "camera leads" switch
     playback.dart       synced multi-clip playback engine, seek bar, single-video player
     compare_screen.dart grid / side-by-side / wipe / overlay / switcher
@@ -178,7 +201,8 @@ lib/
     camera_node.dart    camera phone: link, clock sync, camera control, timed capture, upload
     node_screen.dart    viewfinder UI on camera phones
     join_screen.dart    discovery / QR / manual join
-assets/web/             browser camera (index.html, app.js) and iPhone setup page
+assets/web/             browser camera (index.html, app.js, transport.js) and iPhone setup page;
+                        CI also publishes it to GitHub Pages (the no-certificate route)
 tools/align_clips.py    desktop: frame-align a take's videos (ffmpeg + numpy); --extra for other cameras
 tool/make_icon.dart     draws the app icon
 test/                   clock sync, trigger precision, take math, TLS certificates
@@ -212,6 +236,7 @@ test/                   clock sync, trigger precision, take math, TLS certificat
 - Live view pauses while a phone is recording; its tile shows a REC card with the running time. Streaming frames during recording made phones lag (the camera plugin copies every full-resolution frame into the app), so it's off on both platforms.
 - Outside recording, live view grabs single frames at 6 fps (15 fps for the camera opened full-screen), not a continuous stream, for the same reason.
 - Large 4K videos upload over Wi-Fi after you stop recording. You can turn uploads off and collect the files from each phone's gallery instead.
-- Browser cameras need a one-time certificate install per iPhone. An install-free path would need a public HTTPS page plus WebRTC with internet-based signaling.
-- Wi-Fi camera drivers are tested against simulated cameras, not real bodies. Canon CCAPI also needs Canon's activation.
+- The no-certificate iPhone route needs internet while joining, and uses free public MQTT relays (HiveMQ, then EMQX as fallback). If both are down, use the Offline tab.
+- Camera drivers are tested against simulated cameras, not real bodies. Canon CCAPI also needs Canon's activation.
+- The Android APK is about 110 MB because the WebRTC library ships for every CPU type. Per-CPU APKs would be about 40 MB each.
 - Ideas: automatic calibration (decode the clock from photos on-device), RAW/DNG capture, LTC timecode audio track, and remote file browser per camera.

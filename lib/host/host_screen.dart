@@ -195,7 +195,7 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
                   Navigator.push(context, MaterialPageRoute<void>(builder: (_) => page));
                 },
                 itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'cam', child: Text('Wi-Fi camera (GoPro, Canon, Lumix)')),
+                  PopupMenuItem(value: 'cam', child: Text('Camera link (Sony, Canon, Nikon, GoPro…)')),
                   PopupMenuItem(value: 'rig', child: Text('Rig order & timing')),
                   PopupMenuItem(value: 'cal', child: Text('Sync calibration clock')),
                   PopupMenuItem(value: 'settings', child: Text('Capture settings')),
@@ -528,70 +528,96 @@ class _JoinInfo extends StatefulWidget {
 /// How to add cameras: the app (auto-discovery or QR), or an iPhone browser
 /// with no app installed.
 class _JoinInfoState extends State<_JoinInfo> {
-  bool _web = false;
+  // 0 = app, 1 = iPhone browser via GitHub Pages (no certificate),
+  // 2 = iPhone browser offline (certificate route)
+  int _mode = 0;
 
   @override
   Widget build(BuildContext context) {
     final server = widget.server;
-    final ip = server.addresses.isEmpty ? null : server.addresses.first;
-    final webUrl = server.webJoinUrl;
-    final qrSize = widget.big ? 220.0 : 180.0;
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(widget.big ? 'Waiting for cameras' : 'Add cameras', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 12),
-          SegmentedButton<bool>(
-            segments: const [
-              ButtonSegment(value: false, icon: Icon(Icons.phone_android), label: Text('With the app')),
-              ButtonSegment(value: true, icon: Icon(Icons.language), label: Text('iPhone, no app')),
-            ],
-            selected: {_web},
-            onSelectionChanged: (v) => setState(() => _web = v.first),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            _web
-                ? 'Scan this with the iPhone\'s Camera app and open the link in Safari. The page walks '
-                    'through a one-time certificate install, then the iPhone joins as a camera in the browser.'
-                : 'On each phone open SyncCam → "Join as camera". This host appears automatically, '
-                    'or scan the code below.',
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 4),
-          const Text('All phones must be on the same Wi-Fi or this phone\'s hotspot.',
-              textAlign: TextAlign.center, style: TextStyle(color: Colors.white60, fontSize: 12)),
-          const SizedBox(height: 16),
-          if (ip != null)
-            Container(
-              color: Colors.white,
-              padding: const EdgeInsets.all(12),
-              child: QrImageView(data: _web ? webUrl! : 'synccam://$ip:${Net.httpPort}', size: qrSize),
+    return ListenableBuilder(
+      listenable: server.rtc,
+      builder: (context, _) {
+        final ip = server.addresses.isEmpty ? null : server.addresses.first;
+        final rtc = server.rtc;
+        final qrSize = widget.big ? 220.0 : 180.0;
+        final (String? qr, String help) = switch (_mode) {
+          1 => (
+              rtc.ready ? rtc.joinUrl : null,
+              'Scan with the iPhone\'s Camera app; it opens in Safari. Tap Start camera: no app, '
+                  'no certificate. Needs internet only while joining; video and files then go phone to phone.'
             ),
-          const SizedBox(height: 12),
-          if (server.addresses.isEmpty)
-            const Text('No network found. Connect to Wi-Fi or turn on a hotspot.',
-                style: TextStyle(color: Colors.orange))
-          else if (_web) ...[
-            SelectableText(webUrl!, textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleMedium),
-            if (server.httpsError != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(server.httpsError!, style: const TextStyle(color: Colors.orange)),
+          2 => (
+              server.webJoinUrl,
+              'For shoots with no internet. Scan with the iPhone\'s Camera app; the page walks through a '
+                  'one-time certificate install, then the iPhone joins in Safari.'
+            ),
+          _ => (
+              ip == null ? null : 'synccam://$ip:${Net.httpPort}',
+              'On each phone open SyncCam → "Join as camera". This host appears automatically, or scan this code.'
+            ),
+        };
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(widget.big ? 'Waiting for cameras' : 'Add cameras', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 12),
+              SegmentedButton<int>(
+                showSelectedIcon: false,
+                segments: const [
+                  ButtonSegment(value: 0, icon: Icon(Icons.phone_android), label: Text('App')),
+                  ButtonSegment(value: 1, icon: Icon(Icons.language), label: Text('iPhone, no app')),
+                  ButtonSegment(value: 2, icon: Icon(Icons.wifi_off), label: Text('Offline')),
+                ],
+                selected: {_mode},
+                onSelectionChanged: (v) => setState(() => _mode = v.first),
               ),
-            if (server.caFingerprint case final fp?)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text('Certificate fingerprint: ${fp.substring(0, 23)}…',
-                    style: const TextStyle(color: Colors.white38, fontSize: 11)),
-              ),
-          ] else
-            SelectableText(server.addresses.map((a) => '$a:${Net.httpPort}').join('\n'),
-                textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleMedium),
-        ],
-      ),
+              const SizedBox(height: 12),
+              Text(help, textAlign: TextAlign.center),
+              const SizedBox(height: 4),
+              const Text('All phones must be on the same Wi-Fi or this phone\'s hotspot.',
+                  textAlign: TextAlign.center, style: TextStyle(color: Colors.white60, fontSize: 12)),
+              const SizedBox(height: 16),
+              if (qr != null)
+                Container(
+                  color: Colors.white,
+                  padding: const EdgeInsets.all(12),
+                  child: QrImageView(data: qr, size: qrSize),
+                )
+              else if (_mode == 1)
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(rtc.status, textAlign: TextAlign.center, style: const TextStyle(color: Colors.orange)),
+                ),
+              const SizedBox(height: 12),
+              if (server.addresses.isEmpty && _mode != 1)
+                const Text('No network found. Connect to Wi-Fi or turn on a hotspot.',
+                    style: TextStyle(color: Colors.orange))
+              else if (_mode == 1 && rtc.ready)
+                Text(rtc.status, textAlign: TextAlign.center, style: const TextStyle(color: Colors.greenAccent))
+              else if (_mode == 2) ...[
+                SelectableText(server.webJoinUrl ?? '',
+                    textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleMedium),
+                if (server.httpsError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(server.httpsError!, style: const TextStyle(color: Colors.orange)),
+                  ),
+                if (server.caFingerprint case final fp?)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text('Certificate fingerprint: ${fp.substring(0, 23)}…',
+                        style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                  ),
+              ] else if (_mode == 0)
+                SelectableText(server.addresses.map((a) => '$a:${Net.httpPort}').join('\n'),
+                    textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleMedium),
+            ],
+          ),
+        );
+      },
     );
   }
 }

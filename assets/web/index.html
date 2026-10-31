@@ -65,7 +65,7 @@
   <div class="overlay" id="start">
     <div class="card">
       <h1>SyncCam camera</h1>
-      <div>Session: <b>{{SESSION}}</b></div>
+      <div>Session: <b id="sessionLabel">{{SESSION}}</b></div>
       <input id="name" placeholder="Camera name" autocomplete="off">
       <button class="primary" id="startBtn">Start camera</button>
       <div class="hint">Keep this tab open and the screen on while shooting. Photos and videos are sent to the host phone; you can also save copies here.</div>
@@ -73,7 +73,8 @@
     </div>
   </div>
 
-<script>window.SYNCCAM = { version: '{{VERSION}}', protocol: {{PROTOCOL}}, session: '{{SESSION}}' };</script>
+<script>window.SYNCCAM = { version: '{{VERSION}}', protocol: {{PROTOCOL}}, session: '{{SESSION}}', mode: '{{MODE}}' };</script>
+<script src="transport.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

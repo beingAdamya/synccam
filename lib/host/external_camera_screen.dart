@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'external_camera.dart';
 import 'host_server.dart';
 
-/// Connect a Wi-Fi camera (GoPro, Canon, Lumix) that leads the rig: its own
+/// Connect a dedicated camera (any brand) that can lead the rig: its own
 /// record button starts and stops every phone.
 class ExternalCameraScreen extends StatefulWidget {
   const ExternalCameraScreen({super.key, required this.server});
@@ -44,26 +45,28 @@ class _ExternalCameraScreenState extends State<ExternalCameraScreen> {
   }
 
   void _pickKind(ExternalKind k) => setState(() {
-        _kind = k;
-        _host.text = k.defaultHost;
-        _port.text = '${k.defaultPort}';
-      });
+    _kind = k;
+    _host.text = k.defaultHost;
+    _port.text = '${k.defaultPort}';
+  });
 
   Future<void> _connect() async {
-    await server.setExternal(ExternalConfig(
-      kind: _kind,
-      host: _host.text.trim(),
-      port: int.tryParse(_port.text.trim()) ?? _kind.defaultPort,
-      https: _https,
-      user: _user.text.trim(),
-      password: _pass.text,
-    ));
+    await server.setExternal(
+      ExternalConfig(
+        kind: _kind,
+        host: _host.text.trim(),
+        port: int.tryParse(_port.text.trim()) ?? _kind.defaultPort,
+        https: _https,
+        user: _user.text.trim(),
+        password: _pass.text,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Wi-Fi camera')),
+      appBar: AppBar(title: const Text('Camera link')),
       body: ListenableBuilder(
         listenable: server,
         builder: (context, _) {
@@ -80,61 +83,106 @@ class _ExternalCameraScreenState extends State<ExternalCameraScreen> {
               const SizedBox(height: 8),
               DropdownButtonFormField<ExternalKind>(
                 initialValue: _kind,
+                isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Camera', border: OutlineInputBorder()),
-                items: [for (final k in ExternalKind.values) DropdownMenuItem(value: k, child: Text(k.label))],
+                items: [
+                  for (final k in _ordered)
+                    DropdownMenuItem(
+                      value: k,
+                      child: Text('${k.brand} · ${k.label}', overflow: TextOverflow.ellipsis),
+                    ),
+                ],
                 onChanged: (k) => _pickKind(k!),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  _cap(_kind.canLead, 'Its REC button starts the phones'),
+                  _cap(_kind.canControl, 'SyncCam starts the camera'),
+                  _cap(true, 'Frame-aligned by sound'),
+                ],
               ),
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Text(_kind.setupHint, style: const TextStyle(fontSize: 12, color: Colors.white70)),
-              ),
-              Row(children: [
-                Expanded(
-                  flex: 3,
-                  child: TextField(
-                    controller: _host,
-                    keyboardType: TextInputType.url,
-                    decoration: const InputDecoration(labelText: 'Camera IP', border: OutlineInputBorder()),
-                  ),
+                child: Text(
+                  '${_kind.setupHint}\n\n${_kind.maturity}',
+                  style: const TextStyle(fontSize: 12, color: Colors.white70),
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(
-                    controller: _port,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Port', border: OutlineInputBorder()),
-                  ),
-                ),
-              ]),
-              ExpansionTile(
-                tilePadding: EdgeInsets.zero,
-                title: const Text('Login (GoPro Home Network, Canon with password)'),
-                children: [
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('HTTPS'),
-                    value: _https,
-                    onChanged: (v) => setState(() => _https = v),
-                  ),
-                  TextField(controller: _user, decoration: const InputDecoration(labelText: 'User')),
-                  TextField(controller: _pass, obscureText: true, decoration: const InputDecoration(labelText: 'Password')),
-                  const SizedBox(height: 8),
-                ],
               ),
+              if (_kind.needsConnection) ...[
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: TextField(
+                        controller: _host,
+                        keyboardType: TextInputType.url,
+                        decoration: const InputDecoration(labelText: 'Camera IP', border: OutlineInputBorder()),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: _port,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(labelText: 'Port', border: OutlineInputBorder()),
+                      ),
+                    ),
+                  ],
+                ),
+                ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  title: const Text('Login (GoPro Home Network, Theta client mode, Canon/Blackmagic HTTPS)'),
+                  children: [
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('HTTPS'),
+                      value: _https,
+                      onChanged: (v) => setState(() => _https = v),
+                    ),
+                    TextField(
+                      controller: _user,
+                      decoration: const InputDecoration(labelText: 'User'),
+                    ),
+                    TextField(
+                      controller: _pass,
+                      obscureText: true,
+                      decoration: const InputDecoration(labelText: 'Password'),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                ),
+              ],
               const SizedBox(height: 8),
               FilledButton.icon(
                 onPressed: _connect,
                 icon: const Icon(Icons.link),
-                label: Text(cam == null ? 'Connect' : 'Reconnect with these settings'),
+                label: Text(
+                  !_kind.needsConnection
+                      ? 'Use sync by sound'
+                      : cam == null
+                      ? 'Connect'
+                      : 'Reconnect with these settings',
+                ),
               ),
+              if (cam != null && cam.config.kind.needsConnection)
+                TextButton.icon(
+                  onPressed: () =>
+                      Navigator.push(context, MaterialPageRoute<void>(builder: (_) => _LogScreen(camera: cam))),
+                  icon: const Icon(Icons.receipt_long),
+                  label: const Text('Connection log'),
+                ),
               const SizedBox(height: 8),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Camera leads the phones'),
-                subtitle: const Text('Its record button starts and stops every phone'),
-                value: server.externalLeads,
-                onChanged: server.setExternalLeads,
-              ),
+              if (cam == null || cam.config.kind.canLead)
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Camera leads the phones'),
+                  subtitle: const Text('Its record button starts and stops every phone'),
+                  value: server.externalLeads,
+                  onChanged: server.setExternalLeads,
+                ),
               if (cam != null)
                 TextButton.icon(
                   onPressed: () => server.setExternal(null),
@@ -150,7 +198,8 @@ class _ExternalCameraScreenState extends State<ExternalCameraScreen> {
               ),
               const SizedBox(height: 8),
               const Text(
-                'Not supported over Wi-Fi yet: Nikon, Sony and Fujifilm, which use PTP/IP or desktop SDKs.',
+                'Camera not listed or no Wi-Fi? Choose "Any camera: sync by sound". Every camera with a '
+                'microphone can be lined up with the phones to the frame afterwards.',
                 style: TextStyle(fontSize: 12, color: Colors.white60),
               ),
             ],
@@ -160,12 +209,32 @@ class _ExternalCameraScreenState extends State<ExternalCameraScreen> {
     );
   }
 
+  /// Brands in a friendly order; "any camera" last.
+  static final List<ExternalKind> _ordered = [...ExternalKind.values]
+    ..sort((a, b) {
+      if (a == ExternalKind.sound) return 1;
+      if (b == ExternalKind.sound) return -1;
+      if (a == ExternalKind.ptp) return 1;
+      if (b == ExternalKind.ptp) return -1;
+      return a.brand.compareTo(b.brand);
+    });
+
+  Widget _cap(bool yes, String text) => Chip(
+    visualDensity: VisualDensity.compact,
+    avatar: Icon(
+      yes ? Icons.check_circle : Icons.remove_circle_outline,
+      size: 16,
+      color: yes ? Colors.greenAccent : Colors.white38,
+    ),
+    label: Text(text, style: TextStyle(fontSize: 12, color: yes ? null : Colors.white38)),
+  );
+
   Widget _status(ExternalCamera cam) {
     final (color, text) = !cam.connected
         ? (Colors.redAccent, cam.error ?? 'Connecting…')
         : cam.recording
-            ? (Colors.red, '● Recording')
-            : (Colors.greenAccent, 'Connected · ready');
+        ? (Colors.red, '● Recording')
+        : (Colors.greenAccent, 'Connected · ready');
     return Card(
       child: ListTile(
         leading: Icon(Icons.videocam, color: color),
@@ -192,25 +261,75 @@ class ExternalCameraStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final cam = server.external;
     if (cam == null) return const SizedBox.shrink();
-    final color = !cam.connected ? Colors.redAccent : cam.recording ? Colors.red : Colors.greenAccent;
+    final color = !cam.connected
+        ? Colors.redAccent
+        : cam.recording
+        ? Colors.red
+        : Colors.greenAccent;
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerHigh,
       child: InkWell(
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(children: [
-            Icon(cam.recording ? Icons.fiber_manual_record : Icons.videocam, size: 16, color: color),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                '${cam.model ?? cam.config.kind.label} · '
-                '${!cam.connected ? 'not connected' : cam.recording ? 'recording' : server.externalLeads ? 'leads the rig' : 'connected'}',
-                overflow: TextOverflow.ellipsis,
+          child: Row(
+            children: [
+              Icon(cam.recording ? Icons.fiber_manual_record : Icons.videocam, size: 16, color: color),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '${cam.model ?? cam.config.kind.label} · '
+                  '${!cam.connected
+                      ? 'not connected'
+                      : cam.recording
+                      ? 'recording'
+                      : server.externalLeads
+                      ? 'leads the rig'
+                      : 'connected'}',
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-            ),
-            const Icon(Icons.chevron_right, size: 18),
-          ]),
+              const Icon(Icons.chevron_right, size: 18),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Every request and answer exchanged with the camera, to diagnose a camera
+/// that doesn't behave. "Copy" puts it on the clipboard to send to support.
+class _LogScreen extends StatelessWidget {
+  const _LogScreen({required this.camera});
+  final ExternalCamera camera;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Connection log'),
+        actions: [
+          IconButton(
+            tooltip: 'Copy',
+            icon: const Icon(Icons.copy),
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: camera.log.join('\n')));
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Log copied')));
+            },
+          ),
+        ],
+      ),
+      body: ListenableBuilder(
+        listenable: camera,
+        builder: (context, _) => ListView.builder(
+          padding: const EdgeInsets.all(8),
+          itemCount: camera.log.length,
+          reverse: true,
+          itemBuilder: (_, i) => Text(
+            camera.log[camera.log.length - 1 - i],
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+          ),
         ),
       ),
     );
