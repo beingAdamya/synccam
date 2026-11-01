@@ -99,7 +99,7 @@ class SyncSheet extends StatelessWidget {
                 alignment: Alignment.centerRight,
                 child: TextButton.icon(
                   icon: const Icon(Icons.timer_outlined),
-                  label: const Text('Open calibration clock'),
+                  label: const Text('Fine-tune timing'),
                   onPressed: () {
                     Navigator.pop(context);
                     Navigator.push(

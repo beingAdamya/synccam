@@ -29,12 +29,12 @@ class _HostSettingsScreenState extends State<HostSettingsScreen> {
   Widget build(BuildContext context) {
     final g = server.global;
     return Scaffold(
-      appBar: AppBar(title: const Text('Capture settings')),
+      appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         children: [
           _h('Synchronization'),
           ListTile(
-            title: Text('Trigger lead time: ${cfg.leadMs} ms'),
+            title: Text('Prep time before each shot: ${cfg.leadMs} ms'),
             subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Slider(
                 min: 300,
@@ -44,13 +44,13 @@ class _HostSettingsScreenState extends State<HostSettingsScreen> {
                 onChanged: (v) => _cfg(() => cfg.leadMs = v.round()),
               ),
               const Text(
-                  'Delay between pressing the shutter and the shared trigger instant. Raise it on a busy '
-                  'or weak network so every phone receives the command in time.',
+                  'How long the cameras get to prepare after you press the shutter. Raise it if some cameras '
+                  'miss shots on a busy or weak Wi-Fi.',
                   style: TextStyle(fontSize: 12)),
             ]),
           ),
           ListTile(
-            title: Text('Bullet-time stagger: ${cfg.staggerMs} ms per camera'),
+            title: Text('Sweep delay between cameras: ${cfg.staggerMs} ms'),
             subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Slider(
                 min: 0,
@@ -60,14 +60,14 @@ class _HostSettingsScreenState extends State<HostSettingsScreen> {
                 onChanged: (v) => _cfg(() => cfg.staggerMs = v.round()),
               ),
               const Text(
-                  '0 = every camera fires at the same instant (frozen moment). Above 0, cameras fire one '
-                  'after another in rig order for a time-slice sweep.',
+                  '0 = every camera shoots at the same instant (frozen moment). Above 0, they shoot one after '
+                  'another in camera order, for a "bullet time" sweep.',
                   style: TextStyle(fontSize: 12)),
             ]),
           ),
           SwitchListTile(
-            title: const Text('Auto slate after video start'),
-            subtitle: const Text('Beep + flash from this phone 1.5 s after recording starts, for exact audio alignment'),
+            title: const Text('Sync beep when recording starts'),
+            subtitle: const Text('A short beep every camera hears, so videos can be lined up perfectly later'),
             value: cfg.autoSlate,
             onChanged: (v) => _cfg(() => cfg.autoSlate = v),
           ),
@@ -107,8 +107,8 @@ class _HostSettingsScreenState extends State<HostSettingsScreen> {
           ),
           _h('Media'),
           SwitchListTile(
-            title: const Text('Send files to this host'),
-            subtitle: const Text('Each camera uploads its photo/video here after capture, grouped by take'),
+            title: const Text('Collect everything on this phone'),
+            subtitle: const Text('Every camera sends its photos and videos here, sorted by shot'),
             value: cfg.autoUpload,
             onChanged: (v) => _cfg(() => cfg.autoUpload = v),
           ),
@@ -134,7 +134,7 @@ class _HostSettingsScreenState extends State<HostSettingsScreen> {
             ),
           ),
           ListTile(
-            title: const Text('Capture orientation'),
+            title: const Text('Lock orientation'),
             trailing: DropdownButton<OrientationLock>(
               value: g.orientation,
               items: [for (final o in OrientationLock.values) DropdownMenuItem(value: o, child: Text(o.name))],
@@ -143,12 +143,12 @@ class _HostSettingsScreenState extends State<HostSettingsScreen> {
           ),
           SwitchListTile(
             title: const Text('Video stabilization'),
-            subtitle: const Text('Adds a little latency; off gives tighter sync'),
+            subtitle: const Text('Smoother handheld video; off keeps timing tightest'),
             value: g.stabilization,
             onChanged: (v) => _global((s) => s.stabilization = v),
           ),
           ListTile(
-            title: Text('JPEG quality: ${g.jpegQuality}'),
+            title: Text('Photo quality: ${g.jpegQuality}'),
             subtitle: Slider(
               min: 50,
               max: 100,

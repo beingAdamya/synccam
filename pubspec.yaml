@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.4.0+5
+version: 0.5.0+6
 
 environment:
   sdk: ^3.13.5
@@ -53,6 +53,8 @@ dependencies:
   pointycastle: ^4.0.0
   flutter_webrtc: ^1.6.3
   mqtt_client: ^10.14.0
+  workmanager: ^0.10.10
+  flutter_local_notifications: ^22.3.3
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -79,6 +81,21 @@ flutter:
   # Browser camera client served by the host to iPhones without the app.
   assets:
     - assets/web/
+    - assets/icon/logo3d.png
+
+  # Poppins (SIL Open Font License, assets/fonts/OFL.txt)
+  fonts:
+    - family: Poppins
+      fonts:
+        - asset: assets/fonts/Poppins-Regular.ttf
+        - asset: assets/fonts/Poppins-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Poppins-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Poppins-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Poppins-ExtraBold.ttf
+          weight: 800
 
   # To add assets to your application, add an assets section, like this:
   # assets:

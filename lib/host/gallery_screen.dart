@@ -21,7 +21,7 @@ class GalleryScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Takes')),
+      appBar: AppBar(title: const Text('Gallery')),
       body: ListenableBuilder(
         listenable: library,
         builder: (context, _) {
@@ -30,8 +30,8 @@ class GalleryScreen extends StatelessWidget {
               child: Padding(
                 padding: EdgeInsets.all(32),
                 child: Text(
-                  'No takes on this phone yet.\n\nTakes are collected on the phone that hosts the session. '
-                  'Photos and videos this phone captured as a camera are in your Photos app, in the SyncCam album.',
+                  'Nothing here yet.\n\nPhotos and videos from every camera are collected on the phone that runs the shoot. '
+                  'Anything this phone filmed as a camera is in your Photos app, in the SyncCam album.',
                   textAlign: TextAlign.center,
                 ),
               ),
@@ -48,7 +48,7 @@ class GalleryScreen extends StatelessWidget {
                 title: Text(t.label.isNotEmpty ? t.label : '${t.kind[0].toUpperCase()}${t.kind.substring(1)} · ${_time(t.createdAt)}'),
                 subtitle: Text('${t.devices.length} cameras · ${t.receivedFiles}/${t.items.length} files received'
                     '${t.shots > 1 ? ' · ${t.shots} shots' : ''}'
-                    '${spread != null ? ' · spread ${spread.toStringAsFixed(1)} ms' : ''}'),
+                    '${spread != null ? ' · in sync within ${spread.toStringAsFixed(1)} ms' : ''}'),
                 onTap: () => Navigator.push(
                     context, MaterialPageRoute<void>(builder: (_) => TakeScreen(library: library, server: server, take: t))),
               );

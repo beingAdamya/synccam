@@ -66,7 +66,7 @@ class _TakeScreenState extends State<TakeScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete take?'),
+        title: const Text('Delete this shot?'),
         content: const Text('Files on this host are removed. Copies kept on each camera are not affected.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
@@ -77,6 +77,26 @@ class _TakeScreenState extends State<TakeScreen> {
     if (ok != true) return;
     await widget.library.delete(take);
     if (mounted) Navigator.pop(context);
+  }
+
+  /// Give the shot a name ("Ceremony – first kiss") instead of a timestamp.
+  Future<void> _rename() async {
+    final ctl = TextEditingController(text: take.label);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Name this shot'),
+        content: TextField(controller: ctl, autofocus: true, decoration: const InputDecoration(hintText: 'e.g. First dance')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, ctl.text.trim()), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (name == null) return;
+    take.label = name;
+    await take.save();
+    widget.library.changed();
   }
 
   /// The user reads the calibration clock in each photo. A phone whose photo
@@ -102,7 +122,7 @@ class _TakeScreenState extends State<TakeScreen> {
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Apply trims')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Adjust timing')),
         ],
       ),
     );
@@ -152,18 +172,28 @@ class _TakeScreenState extends State<TakeScreen> {
         final spread = take.spreadMs(_shot);
         return Scaffold(
           appBar: AppBar(
-            title: Text(take.kind == 'video' ? 'Video take' : 'Photo take'),
+            title: InkWell(
+              onTap: _rename,
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Flexible(
+                  child: Text(take.label.isNotEmpty ? take.label : (take.kind == 'video' ? 'Video' : 'Photo'),
+                      overflow: TextOverflow.ellipsis),
+                ),
+                const SizedBox(width: 6),
+                const Icon(Icons.edit_rounded, size: 16),
+              ]),
+            ),
             actions: [
               if (widget.server != null && (widget.calibrate || take.kind != 'video'))
-                IconButton(tooltip: 'Calibrate from clock', icon: const Icon(Icons.tune), onPressed: _calibrate),
+                IconButton(tooltip: 'Fine-tune timing from this shot', icon: const Icon(Icons.tune), onPressed: _calibrate),
               if (take.receivedFiles > 0)
                 IconButton(
-                  tooltip: 'Compare angles',
+                  tooltip: 'Compare',
                   icon: const Icon(Icons.compare),
                   onPressed: () => Navigator.push(
                       context, MaterialPageRoute<void>(builder: (_) => CompareScreen(take: take, shot: _shot))),
                 ),
-              IconButton(tooltip: 'Save all to Photos', icon: const Icon(Icons.download), onPressed: _busy ? null : _saveAll),
+              IconButton(tooltip: 'Save to Photos', icon: const Icon(Icons.download), onPressed: _busy ? null : _saveAll),
               IconButton(tooltip: 'Share', icon: const Icon(Icons.share), onPressed: _share),
               IconButton(tooltip: 'Delete', icon: const Icon(Icons.delete_outline), onPressed: _delete),
             ],

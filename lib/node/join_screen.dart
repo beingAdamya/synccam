@@ -6,6 +6,8 @@ import 'package:nsd/nsd.dart' as nsd;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/protocol.dart';
+import '../ui/theme.dart';
+import '../ui/widgets.dart';
 import 'camera_node.dart';
 import 'node_screen.dart';
 
@@ -86,7 +88,7 @@ class _JoinScreenState extends State<JoinScreen> {
     final uri = Uri.tryParse(code);
     if (uri == null || uri.scheme != 'synccam' || uri.host.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Not a SyncCam code')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('That isn\'t a SyncCam code. Scan the code on the controlling phone.')));
       }
       return;
     }
@@ -96,65 +98,76 @@ class _JoinScreenState extends State<JoinScreen> {
   @override
   Widget build(BuildContext context) {
     final services = _discovery?.services ?? const <nsd.Service>[];
+    final t = Theme.of(context).textTheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('Join as camera')),
+      appBar: AppBar(title: const Text('Join as a camera')),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 32),
         children: [
+          Text('Connect this phone to the same Wi-Fi (or hotspot) as the phone running the shoot, then pick the shoot below.',
+              style: t.bodyMedium?.copyWith(color: Brand.textDim)),
+          const SizedBox(height: 16),
           TextField(
             controller: _nameCtl,
-            decoration: const InputDecoration(labelText: 'This camera\'s name', border: OutlineInputBorder()),
+            decoration: const InputDecoration(labelText: 'Name for this camera', prefixIcon: Icon(Icons.badge_outlined)),
           ),
-          const SizedBox(height: 24),
-          Row(children: [
-            Text('Hosts nearby', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(width: 8),
-            const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-          ]),
-          const SizedBox(height: 8),
+          const SectionTitle('Shoots nearby'),
           if (_discoveryError != null)
-            Text('Auto-discovery unavailable: $_discoveryError', style: const TextStyle(color: Colors.orange)),
+            Text('Can\'t look for shoots automatically on this network. Use Scan code instead.',
+                style: t.bodyMedium?.copyWith(color: Brand.warn)),
           if (services.isEmpty && _discoveryError == null)
-            const Text('Searching the local network… Make sure both phones are on the same Wi-Fi or hotspot.',
-                style: TextStyle(color: Colors.grey)),
-          for (final s in services)
-            Card(
-              child: ListTile(
-                leading: const Icon(Icons.videocam),
-                title: Text(s.name ?? 'SyncCam host'),
-                subtitle: Text('${s.addresses?.map((a) => a.address).join(', ') ?? s.host ?? ''}:${s.port}'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _joinService(s),
-              ),
+            GlassCard(
+              child: Row(children: [
+                const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5)),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text('Looking for shoots… Make sure both phones are on the same Wi-Fi.',
+                      style: t.bodyMedium?.copyWith(color: Brand.textDim)),
+                ),
+              ]),
             ),
-          const SizedBox(height: 24),
-          FilledButton.tonalIcon(
-            onPressed: _scan,
-            icon: const Icon(Icons.qr_code_scanner),
-            label: const Text('Scan host QR code'),
+          for (final svc in services) ...[
+            ActionCard(
+              icon: Icons.videocam_rounded,
+              color: Brand.good,
+              title: svc.name ?? 'SyncCam shoot',
+              subtitle: 'Tap to join',
+              highlight: true,
+              onTap: () => _joinService(svc),
+            ),
+            const SizedBox(height: 10),
+          ],
+          const SizedBox(height: 16),
+          PrimaryButton(label: 'Scan code', icon: Icons.qr_code_scanner_rounded, onPressed: _scan),
+          const SizedBox(height: 6),
+          Text('The code is under "Add cameras" on the controlling phone.',
+              textAlign: TextAlign.center, style: t.bodySmall),
+          ExpansionTile(
+            tilePadding: const EdgeInsets.symmetric(horizontal: 4),
+            title: Text('Type the address instead', style: t.titleSmall),
+            children: [
+              Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: _ipCtl,
+                    keyboardType: TextInputType.url,
+                    decoration: const InputDecoration(hintText: 'e.g. 192.168.1.20'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
+                  onPressed: () {
+                    final v = _ipCtl.text.trim();
+                    if (v.isEmpty) return;
+                    final parts = v.split(':');
+                    _join(parts[0], parts.length > 1 ? int.tryParse(parts[1]) ?? Net.httpPort : Net.httpPort);
+                  },
+                  child: const Text('Join'),
+                ),
+              ]),
+              const SizedBox(height: 12),
+            ],
           ),
-          const SizedBox(height: 24),
-          Text('Or enter the host address', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          Row(children: [
-            Expanded(
-              child: TextField(
-                controller: _ipCtl,
-                keyboardType: TextInputType.url,
-                decoration: const InputDecoration(hintText: '192.168.1.20', border: OutlineInputBorder()),
-              ),
-            ),
-            const SizedBox(width: 8),
-            FilledButton(
-              onPressed: () {
-                final v = _ipCtl.text.trim();
-                if (v.isEmpty) return;
-                final parts = v.split(':');
-                _join(parts[0], parts.length > 1 ? int.tryParse(parts[1]) ?? Net.httpPort : Net.httpPort);
-              },
-              child: const Text('Join'),
-            ),
-          ]),
         ],
       ),
     );
@@ -173,7 +186,7 @@ class _QrScanPageState extends State<_QrScanPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Scan host code')),
+      appBar: AppBar(title: const Text('Scan the code on the controlling phone')),
       body: MobileScanner(
         onDetect: (capture) {
           if (_done) return;

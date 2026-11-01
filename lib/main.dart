@@ -2,22 +2,31 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 
+import 'core/update_service.dart';
 import 'core/updates.dart';
 import 'host/gallery_screen.dart';
 import 'host/host_screen.dart';
 import 'host/take.dart';
 import 'node/join_screen.dart';
+import 'ui/guides.dart';
+import 'ui/onboarding.dart';
+import 'ui/theme.dart';
+import 'ui/update_dialog.dart';
+import 'ui/widgets.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppVersion.load();
-  runApp(const SyncCamApp());
+  try {
+    await UpdateNotifications.init();
+  } catch (_) {}
+  runApp(SyncCamApp(onboarded: await OnboardingScreen.seen()));
 }
 
 class SyncCamApp extends StatelessWidget {
-  const SyncCamApp({super.key});
+  const SyncCamApp({super.key, required this.onboarded});
+  final bool onboarded;
 
   @override
   Widget build(BuildContext context) {
@@ -25,79 +34,137 @@ class SyncCamApp extends StatelessWidget {
       title: 'SyncCam',
       debugShowCheckedModeBanner: false,
       themeMode: ThemeMode.dark,
-      darkTheme: ThemeData(
-        brightness: Brightness.dark,
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.redAccent, brightness: Brightness.dark),
-        useMaterial3: true,
-      ),
-      home: const HomeScreen(),
+      darkTheme: buildTheme(),
+      theme: buildTheme(),
+      // One backdrop behind every screen; camera screens paint their own black.
+      builder: (context, child) => AppBackground(child: child!),
+      home: onboarded ? const HomeScreen() : const _FirstRun(),
     );
   }
 }
 
+class _FirstRun extends StatelessWidget {
+  const _FirstRun();
+  @override
+  Widget build(BuildContext context) => OnboardingScreen(
+        onDone: () => Navigator.of(context).pushReplacement(
+          PageRouteBuilder<void>(
+            pageBuilder: (_, _, _) => const HomeScreen(firstVisit: true),
+            transitionsBuilder: (_, a, _, child) => FadeTransition(opacity: a, child: child),
+          ),
+        ),
+      );
+}
+
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.firstVisit = false});
+  final bool firstVisit;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  ReleaseInfo? _update;
-
   @override
   void initState() {
     super.initState();
-    UpdateChecker.check().then((r) {
-      if (mounted) setState(() => _update = r);
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _afterStart());
+    UpdateNotifications.openedFromNotification.addListener(_checkUpdates);
   }
 
-  Future<void> _host(BuildContext context) async {
+  @override
+  void dispose() {
+    UpdateNotifications.openedFromNotification.removeListener(_checkUpdates);
+    super.dispose();
+  }
+
+  Future<void> _afterStart() async {
+    await _askForNotifications();
+    await _checkUpdates();
+  }
+
+  /// Once, after the tour: explain why, then ask for notification permission
+  /// and start background update checks.
+  Future<void> _askForNotifications() async {
+    if (!(Platform.isAndroid || Platform.isIOS)) return;
     final prefs = await SharedPreferences.getInstance();
-    if (!context.mounted) return;
-    final nameCtl = TextEditingController(text: prefs.getString('host.session') ?? 'SyncCam Session');
-    var asCamera = prefs.getBool('host.asCamera') ?? false;
-    final go = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, set) => AlertDialog(
-          title: const Text('Host a session'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtl,
-                decoration: const InputDecoration(labelText: 'Session name'),
-              ),
-              const SizedBox(height: 8),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Use this phone as a camera too'),
-                value: asCamera,
-                onChanged: (v) => set(() => asCamera = v),
-              ),
-            ],
-          ),
+    if (!(prefs.getBool('notify.asked') ?? false) && mounted) {
+      await prefs.setBool('notify.asked', true);
+      if (!mounted) return;
+      final yes = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          icon: const IconBadge(Icons.notifications_active_rounded, color: Brand.coral, size: 56),
+          title: const Text('Hear about new versions?'),
+          content: const Text('SyncCam can let you know when an update is ready, even when the app is closed. '
+              'No other notifications.'),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Start')),
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Not now')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Yes, notify me')),
           ],
+        ),
+      );
+      if (yes == true) await UpdateNotifications.requestPermission();
+    }
+    try {
+      await BackgroundUpdates.schedule();
+    } catch (_) {}
+  }
+
+  Future<void> _checkUpdates() async {
+    final fromNotification = UpdateNotifications.openedFromNotification.value;
+    final r = await UpdateChecker.check(force: fromNotification, includeSkipped: fromNotification);
+    UpdateNotifications.openedFromNotification.value = false;
+    if (r != null && mounted) await showUpdateDialog(context, r);
+  }
+
+  Future<void> _startShoot() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    final nameCtl = TextEditingController(text: prefs.getString('host.session') ?? 'My shoot');
+    var asCamera = prefs.getBool('host.asCamera') ?? false;
+    final go = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, set) => Padding(
+          padding: EdgeInsets.fromLTRB(24, 0, 24, MediaQuery.of(ctx).viewInsets.bottom + 24),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Text('Start a shoot', style: Theme.of(ctx).textTheme.titleLarge),
+            const SizedBox(height: 4),
+            Text('This phone will control every camera.', style: Theme.of(ctx).textTheme.bodySmall),
+            const SizedBox(height: 20),
+            TextField(controller: nameCtl, decoration: const InputDecoration(labelText: 'Name of the shoot')),
+            const SizedBox(height: 8),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Use this phone as a camera too'),
+              subtitle: const Text('Film with this phone while it controls the others'),
+              value: asCamera,
+              onChanged: (v) => set(() => asCamera = v),
+            ),
+            const SizedBox(height: 12),
+            PrimaryButton(label: 'Start', icon: Icons.play_arrow_rounded, onPressed: () => Navigator.pop(ctx, true)),
+          ]),
         ),
       ),
     );
-    if (go != true || !context.mounted) return;
-    final name = nameCtl.text.trim().isEmpty ? 'SyncCam Session' : nameCtl.text.trim();
+    if (go != true || !mounted) return;
+    final name = nameCtl.text.trim().isEmpty ? 'My shoot' : nameCtl.text.trim();
     await prefs.setString('host.session', name);
     await prefs.setBool('host.asCamera', asCamera);
     final library = await TakeLibrary.open();
-    if (!context.mounted) return;
+    if (!mounted) return;
     Navigator.push(
       context,
-      MaterialPageRoute<void>(
-        builder: (_) => HostScreen(sessionName: name, hostIsCamera: asCamera, library: library),
-      ),
+      MaterialPageRoute<void>(builder: (_) => HostScreen(sessionName: name, hostIsCamera: asCamera, library: library)),
     );
+  }
+
+  Future<void> _gallery() async {
+    final library = await TakeLibrary.open();
+    if (!mounted) return;
+    Navigator.push(context, MaterialPageRoute<void>(builder: (_) => GalleryScreen(library: library)));
   }
 
   @override
@@ -105,184 +172,78 @@ class _HomeScreenState extends State<HomeScreen> {
     final t = Theme.of(context).textTheme;
     return Scaffold(
       body: SafeArea(
-        // Scrolls on short screens; otherwise fills the height so the
-        // spacers keep the layout centred.
-        child: LayoutBuilder(
-          builder: (context, box) => SingleChildScrollView(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(minHeight: box.maxHeight),
-              child: IntrinsicHeight(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      if (_update case final u?)
-                        _UpdateBanner(release: u, onClose: () => setState(() => _update = null)),
-                      const Spacer(),
-                      const Icon(Icons.camera, size: 72, color: Colors.redAccent),
-                      const SizedBox(height: 12),
-                      Text('SyncCam', textAlign: TextAlign.center, style: t.displaySmall),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Many phones. One shutter. Frame-synced photos and video from every angle.',
-                        textAlign: TextAlign.center,
-                        style: t.bodyLarge?.copyWith(color: Colors.white70),
-                      ),
-                      const Spacer(),
-                      _BigButton(
-                        icon: Icons.dashboard_customize,
-                        title: 'Host a session',
-                        subtitle: 'Control every camera, see all live views, trigger in sync',
-                        onTap: () => _host(context),
-                      ),
-                      const SizedBox(height: 12),
-                      _BigButton(
-                        icon: Icons.videocam,
-                        title: 'Join as camera',
-                        subtitle: 'Let a host control this phone\'s camera',
-                        onTap: () =>
-                            Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const JoinScreen())),
-                      ),
-                      const SizedBox(height: 12),
-                      _BigButton(
-                        icon: Icons.photo_library_outlined,
-                        title: 'Gallery',
-                        subtitle: 'Takes from sessions this phone hosted',
-                        onTap: () async {
-                          final library = await TakeLibrary.open();
-                          if (!context.mounted) return;
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute<void>(builder: (_) => GalleryScreen(library: library)),
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'v${AppVersion.current}',
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white38),
-                      ),
-                      const SizedBox(height: 8),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _BigButton extends StatelessWidget {
-  const _BigButton({required this.icon, required this.title, required this.subtitle, required this.onTap});
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Row(
-            children: [
-              Icon(icon, size: 36),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title, style: Theme.of(context).textTheme.titleLarge),
-                    Text(subtitle, style: const TextStyle(color: Colors.white60)),
-                  ],
-                ),
-              ),
-              const Icon(Icons.chevron_right),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// "A new version is available" card. Android downloads the APK in the
-/// browser (Android then offers to install it over the current app); iOS
-/// opens the release page, since iPhone builds have to be signed separately.
-class _UpdateBanner extends StatelessWidget {
-  const _UpdateBanner({required this.release, required this.onClose});
-  final ReleaseInfo release;
-  final VoidCallback onClose;
-
-  Future<void> _open(BuildContext context) async {
-    final url = Platform.isAndroid ? (release.apkUrl ?? release.pageUrl) : release.pageUrl;
-    final ok = await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
-    if (!ok && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not open $url')));
-    }
-  }
-
-  void _notes(BuildContext context) {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(release.name),
-        content: SingleChildScrollView(child: Text(release.notes.isEmpty ? 'No release notes.' : release.notes)),
-        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Card(
-      color: scheme.primaryContainer,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
           children: [
-            Row(
-              children: [
-                Icon(Icons.system_update, color: scheme.onPrimaryContainer),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'SyncCam ${release.version} is available (you have ${AppVersion.current})',
-                    style: TextStyle(color: scheme.onPrimaryContainer, fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ],
+            Row(children: [
+              const AppLogo(size: 40),
+              const SizedBox(width: 10),
+              Text('SyncCam', style: t.titleLarge),
+              const Spacer(),
+              IconButton(
+                tooltip: 'Help & guides',
+                icon: const Icon(Icons.help_outline_rounded),
+                onPressed: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const HelpScreen())),
+              ),
+            ]),
+            const SizedBox(height: 24),
+            const Center(child: AppLogo(size: 150)),
+            const SizedBox(height: 20),
+            Text('Many cameras.\nOne shutter.',
+                textAlign: TextAlign.center, style: t.headlineSmall?.copyWith(fontSize: 30, height: 1.15)),
+            const SizedBox(height: 10),
+            Text('Shoot photos and video from every angle at exactly the same moment.',
+                textAlign: TextAlign.center, style: t.bodyMedium?.copyWith(color: Brand.textDim)),
+            const SizedBox(height: 28),
+            ActionCard(
+              icon: Icons.play_arrow_rounded,
+              title: 'Start a shoot',
+              subtitle: 'Control every camera from this phone',
+              highlight: true,
+              onTap: _startShoot,
             ),
-            Wrap(
-              alignment: WrapAlignment.end,
-              children: [
-                TextButton(onPressed: () => _notes(context), child: const Text("What's new")),
-                TextButton(
-                  onPressed: () {
-                    UpdateChecker.skip(release);
-                    onClose();
-                  },
-                  child: const Text('Skip version'),
-                ),
-                FilledButton(
-                  onPressed: () => _open(context),
-                  child: Text(Platform.isAndroid ? 'Download update' : 'View release'),
-                ),
-              ],
+            const SizedBox(height: 12),
+            ActionCard(
+              icon: Icons.videocam_rounded,
+              color: Brand.sky,
+              title: 'Join as a camera',
+              subtitle: 'Let another phone control this one',
+              onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const JoinScreen())),
             ),
+            const SizedBox(height: 12),
+            Row(children: [
+              Expanded(child: _MiniCard(icon: Icons.photo_library_rounded, label: 'Gallery', onTap: _gallery)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _MiniCard(
+                  icon: Icons.menu_book_rounded,
+                  label: 'How it works',
+                  onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const HelpScreen())),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 28),
+            Text('Version ${AppVersion.current}', textAlign: TextAlign.center, style: t.bodySmall),
           ],
         ),
       ),
     );
   }
+}
+
+class _MiniCard extends StatelessWidget {
+  const _MiniCard({required this.icon, required this.label, required this.onTap});
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  @override
+  Widget build(BuildContext context) => GlassCard(
+        onTap: onTap,
+        padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 12),
+        child: Column(children: [
+          Icon(icon, color: Brand.coral, size: 28),
+          const SizedBox(height: 8),
+          Text(label, style: Theme.of(context).textTheme.titleSmall),
+        ]),
+      );
 }

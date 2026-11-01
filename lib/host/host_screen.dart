@@ -83,18 +83,18 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('End session?'),
+        title: const Text('End this shoot?'),
         content: Text([
-          if (recording) 'Recording is still running. It will be stopped and saved.',
-          'All ${server.onlineDevices.length} cameras will be disconnected and return to their start screen.',
-          'Takes stay in the gallery on this phone.',
+          if (recording) 'Recording is still on. It will be stopped and saved first.',
+          'The ${server.onlineDevices.length} connected cameras will be let go.',
+          'Your photos and videos stay in the Gallery.',
         ].join('\n\n')),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('End session'),
+            child: const Text('End shoot'),
           ),
         ],
       ),
@@ -175,7 +175,7 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
             actions: [
               IconButton(tooltip: 'Add cameras', icon: const Icon(Icons.qr_code), onPressed: _showJoinInfo),
               IconButton(
-                tooltip: 'Takes',
+                tooltip: 'Gallery',
                 icon: const Icon(Icons.photo_library_outlined),
                 onPressed: () => Navigator.push(
                     context, MaterialPageRoute<void>(builder: (_) => GalleryScreen(library: server.library, server: server))),
@@ -195,17 +195,17 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
                   Navigator.push(context, MaterialPageRoute<void>(builder: (_) => page));
                 },
                 itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'cam', child: Text('Camera link (Sony, Canon, Nikon, GoPro…)')),
-                  PopupMenuItem(value: 'rig', child: Text('Rig order & timing')),
-                  PopupMenuItem(value: 'cal', child: Text('Sync calibration clock')),
-                  PopupMenuItem(value: 'settings', child: Text('Capture settings')),
+                  PopupMenuItem(value: 'cam', child: Text('Pro camera (Sony, Canon, Nikon…)')),
+                  PopupMenuItem(value: 'rig', child: Text('Camera order')),
+                  PopupMenuItem(value: 'cal', child: Text('Fine-tune timing')),
+                  PopupMenuItem(value: 'settings', child: Text('Settings')),
                   PopupMenuDivider(),
                   PopupMenuItem(
                     value: 'end',
                     child: ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: Icon(Icons.stop_circle_outlined, color: Colors.redAccent),
-                      title: Text('End session', style: TextStyle(color: Colors.redAccent)),
+                      title: Text('End shoot', style: TextStyle(color: Colors.redAccent)),
                     ),
                   ),
                 ],
@@ -332,7 +332,7 @@ class ControlPanel extends StatelessWidget {
                   ButtonSegment(value: CaptureMode.photo, label: Text('Photo'), icon: Icon(Icons.photo_camera)),
                   ButtonSegment(value: CaptureMode.burst, label: Text('Burst'), icon: Icon(Icons.burst_mode)),
                   ButtonSegment(value: CaptureMode.video, label: Text('Video'), icon: Icon(Icons.videocam)),
-                  ButtonSegment(value: CaptureMode.interval, label: Text('Lapse'), icon: Icon(Icons.timelapse)),
+                  ButtonSegment(value: CaptureMode.interval, label: Text('Time-lapse'), icon: Icon(Icons.timelapse)),
                 ],
                 selected: {cfg.mode},
                 onSelectionChanged: busy
@@ -354,9 +354,9 @@ class ControlPanel extends StatelessWidget {
                   _toggle(context, _flashIcon(g.flash), g.flash.name, g.flash != FlashChoice.off, () {
                     server.updateGlobal((s) => s.flash = FlashChoice.values[(s.flash.index + 1) % 4]);
                   }),
-                  _toggle(context, Icons.lock_outline, 'AE', g.exposureLocked,
+                  _toggle(context, Icons.wb_sunny_outlined, 'Lock light', g.exposureLocked,
                       () => server.updateGlobal((s) => s.exposureLocked = !s.exposureLocked)),
-                  _toggle(context, Icons.center_focus_strong, 'AF', g.focusLocked,
+                  _toggle(context, Icons.center_focus_strong, 'Lock focus', g.focusLocked,
                       () => server.updateGlobal((s) => s.focusLocked = !s.focusLocked)),
                   _toggle(context, Icons.grid_on, 'Grid', g.showGrid,
                       () => server.updateGlobal((s) => s.showGrid = !s.showGrid)),
@@ -428,7 +428,7 @@ class ControlPanel extends StatelessWidget {
                       child: FilledButton.tonalIcon(
                         onPressed: server.slate,
                         icon: const Icon(Icons.campaign),
-                        label: const Text('Slate'),
+                        label: const Text('Sync beep'),
                       ),
                     ),
                   ),
@@ -562,7 +562,7 @@ class _JoinInfoState extends State<_JoinInfo> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(widget.big ? 'Waiting for cameras' : 'Add cameras', style: Theme.of(context).textTheme.titleLarge),
+              Text(widget.big ? 'Add your cameras' : 'Add cameras', style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 12),
               SegmentedButton<int>(
                 showSelectedIcon: false,
@@ -667,7 +667,7 @@ class _FinishingDialogState extends State<_FinishingDialog> {
     final s = widget.server;
     final rec = s.onlineDevices.where((d) => d.recording).length;
     return AlertDialog(
-      title: const Text('Finishing up'),
+      title: const Text('Saving everything…'),
       content: Row(children: [
         const CircularProgressIndicator(),
         const SizedBox(width: 20),

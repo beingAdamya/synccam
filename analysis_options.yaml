@@ -12,6 +12,7 @@ include: package:flutter_lints/flutter.yaml
 analyzer:
   exclude:
     - build/**
+    - test_screens/** # screenshot renders for manual review, not part of CI
     - android/**
     - ios/**
 

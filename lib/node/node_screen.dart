@@ -49,7 +49,7 @@ class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
         context: context,
         barrierDismissible: false,
         builder: (ctx) => AlertDialog(
-          title: const Text('Session ended'),
+          title: const Text('The shoot has ended'),
           content: const Text('The host ended this session. Anything you captured is saved in Photos '
               '(SyncCam album) and was sent to the host.'),
           actions: [FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
@@ -65,7 +65,7 @@ class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Leave session?'),
+        title: const Text('Leave this shoot?'),
         content: Text(node.recording
             ? 'This camera is recording. Leaving stops and saves its clip.'
             : "This camera will be removed from the host's rig."),
@@ -227,7 +227,7 @@ class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
               ),
               const SizedBox(width: 8),
               IconButton.filledTonal(
-                tooltip: 'Dim screen (saves battery, keeps recording)',
+                tooltip: 'Darken the screen (saves battery, keeps recording)',
                 onPressed: () => setState(() => _dimmed = true),
                 icon: const Icon(Icons.brightness_2),
               ),

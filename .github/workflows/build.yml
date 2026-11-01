@@ -99,6 +99,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -109,7 +110,11 @@ jobs:
         run: |
           mv dist/synccam-android-apk/app-release.apk "SyncCam-$TAG-android.apk"
           mv dist/synccam-ios-unsigned/synccam-unsigned.ipa "SyncCam-$TAG-ios-unsigned.ipa"
-          cat > notes.md <<NOTES
+          # "What's new" from CHANGELOG.md (shown in the app's update popup),
+          # then a --- line, then install instructions.
+          awk -v v="${TAG#v}" '$0 ~ "^## "v"$" {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
+          echo "---" >> notes.md
+          cat >> notes.md <<NOTES
           **Android:** download \`SyncCam-$TAG-android.apk\` on each phone and open it (allow "install unknown apps" when asked).
 
           **iPhone:** \`SyncCam-$TAG-ios-unsigned.ipa\` is not signed, so iOS won't install it as is. Either sign it on your computer with your Apple ID using Sideloadly or AltStore (free account: the app expires after 7 days), or use \`codemagic.yaml\` to get a signed TestFlight build.
@@ -144,7 +149,7 @@ jobs:
           mkdir -p site/cam
           sed -e "s/{{MODE}}/rtc/; s/{{VERSION}}/$VERSION/; s/{{PROTOCOL}}/$PROTOCOL/; s/{{SESSION}}//g" \
             assets/web/index.html > site/cam/index.html
-          cp assets/web/app.js assets/web/transport.js site/cam/
+          cp assets/web/app.js assets/web/transport.js assets/web/logo.png site/cam/
           printf '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=https://github.com/%s">SyncCam' \
             "$GITHUB_REPOSITORY" > site/index.html
           touch site/.nojekyll

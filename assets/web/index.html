@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>SyncCam camera</title>
 <style>
-  :root { color-scheme: dark; --red: #ff4d4d; --green: #2ecc71; --amber: #ffb84d; }
+  :root { color-scheme: dark; --red: #ff3d5a; --coral: #ff7a59; --green: #3ddc97; --amber: #ffb547; --dim: #a7abba; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; height: 100%; background: #000; color: #fff; overflow: hidden;
     font: 15px/1.4 -apple-system, system-ui, sans-serif; }
@@ -27,11 +27,15 @@
   .big { position: fixed; inset: 0; display: none; place-items: center; font-size: 120px; font-weight: 800; text-shadow: 0 0 30px #000; pointer-events: none; }
   .overlay { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 24px; }
   .overlay.show, .big.show { display: grid; }
-  #start { background: #111; display: grid; }
+  #start { display: grid; background: radial-gradient(circle at 15% 0%, #ff3d5a2e, transparent 45%),
+    radial-gradient(circle at 100% 100%, #7c5cff24, transparent 50%), linear-gradient(#161822, #0d0e13); }
   #start .card { max-width: 420px; width: 100%; }
-  #start h1 { margin: 0 0 6px; font-size: 26px; }
-  #start input { width: 100%; padding: 14px; border-radius: 12px; border: 1px solid #333; background: #1d1d1f; color: #fff; font-size: 17px; margin: 14px 0; }
-  #start button.primary { width: 100%; background: var(--red); padding: 15px; font-size: 17px; border-radius: 12px; }
+  #start .logo { width: 128px; height: 128px; display: block; margin: 0 auto 8px; }
+  #start h1 { margin: 0 0 4px; font-size: 28px; font-weight: 800; letter-spacing: -0.5px; }
+  #start .session { color: var(--dim); }
+  #start input { width: 100%; padding: 15px 16px; border-radius: 16px; border: 1px solid #ffffff1f; background: #1a1c26; color: #fff; font-size: 17px; margin: 18px 0 14px; }
+  #start button.primary { width: 100%; background: linear-gradient(135deg, var(--coral), var(--red)); padding: 16px; font-size: 17px;
+    font-weight: 700; border-radius: 18px; box-shadow: 0 8px 24px #ff3d5a55; }
   #identify { background: #fff; color: #000; font-size: 48px; font-weight: 800; }
   #dim { background: #000; color: #555; }
   #ended { background: #111e; }
@@ -64,11 +68,12 @@
 
   <div class="overlay" id="start">
     <div class="card">
-      <h1>SyncCam camera</h1>
-      <div>Session: <b id="sessionLabel">{{SESSION}}</b></div>
-      <input id="name" placeholder="Camera name" autocomplete="off">
+      <img class="logo" src="logo.png" alt="">
+      <h1>Join as a camera</h1>
+      <div class="session">Shoot: <b id="sessionLabel">{{SESSION}}</b></div>
+      <input id="name" placeholder="Name for this camera" autocomplete="off">
       <button class="primary" id="startBtn">Start camera</button>
-      <div class="hint">Keep this tab open and the screen on while shooting. Photos and videos are sent to the host phone; you can also save copies here.</div>
+      <div class="hint">Keep this page open with the screen on while you shoot. Your photos and videos go to the phone running the shoot, and you can save copies here too.</div>
       <div class="err" id="startErr" style="position:static;margin-top:12px"></div>
     </div>
   </div>

@@ -13,10 +13,10 @@
   ol { padding-left: 0; list-style: none; counter-reset: s; }
   li { counter-increment: s; background: #1d1d1f; border-radius: 14px; padding: 14px 16px 14px 56px; margin: 0 0 12px; position: relative; }
   li::before { content: counter(s); position: absolute; left: 16px; top: 14px; width: 28px; height: 28px; border-radius: 50%;
-    background: #ff4d4d; color: #fff; font-weight: 700; display: grid; place-items: center; }
+    background: linear-gradient(135deg, #ff7a59, #ff3d5a); color: #fff; font-weight: 700; display: grid; place-items: center; }
   li.done::before { content: "✓"; background: #2ecc71; }
   .btn { display: block; width: 100%; box-sizing: border-box; text-align: center; padding: 14px; border-radius: 12px; border: 0;
-    background: #ff4d4d; color: #fff; font: 600 17px -apple-system, system-ui, sans-serif; text-decoration: none; margin-top: 10px; }
+    background: linear-gradient(135deg, #ff7a59, #ff3d5a); color: #fff; font: 700 17px -apple-system, system-ui, sans-serif; text-decoration: none; margin-top: 10px; }
   .btn.secondary { background: #2c2c2e; }
   .path { color: #ffd479; }
   small, .muted { color: #999; }
@@ -26,6 +26,7 @@
 </head>
 <body>
 <main>
+  <img src="/logo.png" alt="" style="width:96px;height:96px;display:block;margin:0 auto 12px">
   <h1>Use this iPhone as a camera</h1>
   <p class="sub">Joins session <b>{{SESSION}}</b>. No app needed. The first time only, iPhone needs this host's security certificate so Safari will allow the camera.</p>
   <ol>

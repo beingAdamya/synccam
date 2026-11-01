@@ -75,7 +75,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           appBar: AppBar(
             title: Text('#${d.slot + 1} ${d.name}'),
             actions: [
-              IconButton(tooltip: 'Identify (flash phone)', icon: const Icon(Icons.flare), onPressed: () => server.identify(d)),
+              IconButton(tooltip: 'Flash this phone\'s screen to find it', icon: const Icon(Icons.flare), onPressed: () => server.identify(d)),
               IconButton(tooltip: 'Rotate view', icon: const Icon(Icons.rotate_90_degrees_cw), onPressed: () => server.rotateView(d)),
               IconButton(tooltip: 'Rename', icon: const Icon(Icons.edit), onPressed: _rename),
             ],
@@ -117,7 +117,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               ),
               SwitchListTile(
                 dense: true,
-                title: const Text('Tap-to-focus applies to all cameras'),
+                title: const Text('Tapping to focus sets every camera'),
                 value: _focusAll,
                 onChanged: (v) => setState(() => _focusAll = v),
               ),
@@ -169,7 +169,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                 ),
               _section('Timing'),
               ListTile(
-                title: Text('Trigger trim: ${d.trimMs.toStringAsFixed(0)} ms'),
+                title: Text('Timing adjustment: ${d.trimMs.toStringAsFixed(0)} ms'),
                 subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Slider(
                     min: -300,
@@ -196,7 +196,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               ),
               ListTile(
                 dense: true,
-                title: const Text('Clock sync'),
+                title: const Text('In sync'),
                 trailing: Text(d.synced ? '±${d.errMs.toStringAsFixed(2)} ms' : 'syncing'),
               ),
               ListTile(dense: true, title: const Text('Battery'), trailing: Text('${d.battery ?? '?'}%${d.charging ? ' (charging)' : ''}')),
@@ -208,7 +208,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               ),
               ListTile(
                 dense: true,
-                title: const Text('Thermal state'),
+                title: const Text('Temperature'),
                 trailing: Text('${d.thermal ?? 'unknown'}${d.lowPower ? ' · power saving on' : ''}'),
               ),
               if (d.error != null)
@@ -219,7 +219,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                 ),
               ListTile(
                 leading: const Icon(Icons.link_off, color: Colors.redAccent),
-                title: const Text('Remove from session'),
+                title: const Text('Remove from this shoot'),
                 onTap: () {
                   server.removeDevice(d);
                   Navigator.pop(context);

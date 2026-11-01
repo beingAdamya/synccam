@@ -55,6 +55,8 @@ class ReleaseInfo {
     required this.pageUrl,
     this.apkUrl,
     this.ipaUrl,
+    this.apkSize,
+    this.apkSha256,
   });
 
   final String tag;
@@ -64,6 +66,10 @@ class ReleaseInfo {
   final String pageUrl;
   final String? apkUrl;
   final String? ipaUrl;
+
+  /// Size and SHA-256 GitHub reports for the APK, to verify a download.
+  final int? apkSize;
+  final String? apkSha256;
 }
 
 /// Checks the public GitHub Releases of this repo for a newer version.
@@ -92,13 +98,17 @@ class UpdateChecker {
       final v = SemVer.tryParse(tag);
       if (v == null || !(v > installed)) continue;
       if (best != null && !(v > best.version)) continue;
-      String? asset(String suffix) {
+      Map<String, dynamic>? assetOf(String suffix) {
         for (final a in (r['assets'] as List? ?? const []).whereType<Map<String, dynamic>>()) {
           final name = a['name'] as String? ?? '';
-          if (name.endsWith(suffix)) return a['browser_download_url'] as String?;
+          if (name.endsWith(suffix)) return a;
         }
         return null;
       }
+
+      String? asset(String suffix) => assetOf(suffix)?['browser_download_url'] as String?;
+      final apk = assetOf('.apk');
+      final digest = apk?['digest'] as String?;
 
       best = ReleaseInfo(
         tag: tag,
@@ -108,17 +118,19 @@ class UpdateChecker {
         pageUrl: r['html_url'] as String? ?? 'https://github.com/$repo/releases/tag/$tag',
         apkUrl: asset('.apk'),
         ipaUrl: asset('.ipa'),
+        apkSize: (apk?['size'] as num?)?.toInt(),
+        apkSha256: digest != null && digest.startsWith('sha256:') ? digest.substring(7).toLowerCase() : null,
       );
     }
     return best;
   }
 
   /// Returns a newer release, or null if up to date, skipped, or offline.
-  static Future<ReleaseInfo?> check() async {
+  static Future<ReleaseInfo?> check({bool force = false, bool includeSkipped = false}) async {
     final prefs = await SharedPreferences.getInstance();
     var body = prefs.getString(_cacheKey);
     final at = prefs.getInt(_cacheAtKey) ?? 0;
-    final fresh = DateTime.now().millisecondsSinceEpoch - at < cacheFor.inMilliseconds;
+    final fresh = !force && DateTime.now().millisecondsSinceEpoch - at < cacheFor.inMilliseconds;
     if (body == null || !fresh) {
       final fetched = await _fetch();
       if (fetched != null) {
@@ -130,7 +142,7 @@ class UpdateChecker {
     if (body == null) return null;
     try {
       final newest = pickNewest(jsonDecode(body) as List<dynamic>, AppVersion.current);
-      if (newest == null || prefs.getString(_skipKey) == newest.tag) return null;
+      if (newest == null || (!includeSkipped && prefs.getString(_skipKey) == newest.tag)) return null;
       return newest;
     } catch (_) {
       return null;

@@ -66,7 +66,7 @@ class _ExternalCameraScreenState extends State<ExternalCameraScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Camera link')),
+      appBar: AppBar(title: const Text('Pro camera')),
       body: ListenableBuilder(
         listenable: server,
         builder: (context, _) {
@@ -134,7 +134,7 @@ class _ExternalCameraScreenState extends State<ExternalCameraScreen> {
                 ),
                 ExpansionTile(
                   tilePadding: EdgeInsets.zero,
-                  title: const Text('Login (GoPro Home Network, Theta client mode, Canon/Blackmagic HTTPS)'),
+                  title: const Text('Password (only if your camera asks for one)'),
                   children: [
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
@@ -178,7 +178,7 @@ class _ExternalCameraScreenState extends State<ExternalCameraScreen> {
               if (cam == null || cam.config.kind.canLead)
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('Camera leads the phones'),
+                  title: const Text('Camera starts the phones'),
                   subtitle: const Text('Its record button starts and stops every phone'),
                   value: server.externalLeads,
                   onChanged: server.setExternalLeads,

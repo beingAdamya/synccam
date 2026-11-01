@@ -28,6 +28,14 @@ class FakeCamera {
   Future<void> stop() => server.close(force: true);
 }
 
+/// Waits for [cond] (polling drivers need a few polls), up to [max].
+Future<void> _until(bool Function() cond, {Duration max = const Duration(seconds: 5)}) async {
+  final sw = Stopwatch()..start();
+  while (!cond() && sw.elapsed < max) {
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }
+}
+
 Future<List<bool>> _runScenario(ExternalKind kind, FakeCamera fake) async {
   final port = await fake.start();
   final cam = ExternalCamera.create(ExternalConfig(kind: kind, host: '127.0.0.1', port: port));
@@ -37,9 +45,9 @@ Future<List<bool>> _runScenario(ExternalKind kind, FakeCamera fake) async {
   expect(cam.connected, isTrue, reason: cam.error);
 
   fake.recording = true; // someone pressed REC on the camera body
-  await Future<void>.delayed(const Duration(milliseconds: 700));
+  await _until(() => changes.isNotEmpty);
   fake.recording = false;
-  await Future<void>.delayed(const Duration(milliseconds: 700));
+  await _until(() => changes.length >= 2);
 
   await cam.startRecording(); // SyncCam asks the camera to record
   await cam.stopRecording();

@@ -190,6 +190,7 @@ class HostServer extends ChangeNotifier {
   HttpServer? _https;
   LocalCa? _ca;
   Map<String, String>? _web;
+  Uint8List? _logo;
   Timer? _ipWatch;
   String? httpsError;
 
@@ -350,6 +351,12 @@ class HostServer extends ChangeNotifier {
             ..headers.contentType = ContentType('application', 'x-x509-ca-cert')
             ..headers.set('Content-Disposition', 'attachment; filename="SyncCam-Local-CA.crt"')
             ..add(ca.caCertDer);
+          await req.response.close();
+        case '/logo.png':
+          _logo ??= (await rootBundle.load('assets/web/logo.png')).buffer.asUint8List();
+          req.response
+            ..headers.contentType = ContentType('image', 'png')
+            ..add(_logo!);
           await req.response.close();
         case '/web' || '/setup':
           await _sendPage(req, 'setup.html');

@@ -242,9 +242,9 @@ Future<void> _ptpScenario(ExternalKind kind, String brand) async {
   seen.clear();
 
   fake.pressButton(); // REC pressed on the camera body
-  await Future<void>.delayed(const Duration(milliseconds: 700));
+  await _until(() => seen.isNotEmpty);
   fake.pressButton();
-  await Future<void>.delayed(const Duration(milliseconds: 700));
+  await _until(() => seen.length >= 2);
   expect(seen, [true, false], reason: cam.log.join('\n'));
   cam.dispose();
   await fake.stop();
@@ -266,15 +266,23 @@ Future<(HttpServer, ExternalCamera)> _http(ExternalKind kind, FutureOr<String> F
   return (server, cam);
 }
 
+/// Waits for [cond] (polling drivers need a few polls), up to [max].
+Future<void> _until(bool Function() cond, {Duration max = const Duration(seconds: 5)}) async {
+  final sw = Stopwatch()..start();
+  while (!cond() && sw.elapsed < max) {
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }
+}
+
 Future<List<bool>> _httpScenario(ExternalCamera cam, void Function(bool) setState) async {
   final seen = <bool>[];
   cam.onRecordingChanged = (r, _) => seen.add(r);
   await cam.start();
   expect(cam.connected, isTrue, reason: '${cam.error}\n${cam.log.join('\n')}');
   setState(true);
-  await Future<void>.delayed(const Duration(milliseconds: 600));
+  await _until(() => seen.isNotEmpty);
   setState(false);
-  await Future<void>.delayed(const Duration(milliseconds: 600));
+  await _until(() => seen.length >= 2);
   await cam.startRecording();
   await cam.stopRecording();
   cam.dispose();

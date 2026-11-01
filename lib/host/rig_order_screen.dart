@@ -11,7 +11,7 @@ class RigOrderScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Rig order & timing')),
+      appBar: AppBar(title: const Text('Camera order')),
       body: ListenableBuilder(
         listenable: server,
         builder: (context, _) {
@@ -30,7 +30,7 @@ class RigOrderScreen extends StatelessWidget {
                 subtitle: Text('${d.online ? 'online' : 'offline'} · fires at '
                     '${fire >= 0 ? '+' : ''}${fire.toStringAsFixed(0)} ms · trim ${d.trimMs.toStringAsFixed(0)} ms'),
                 trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                  IconButton(icon: const Icon(Icons.flare), tooltip: 'Identify', onPressed: () => server.identify(d)),
+                  IconButton(icon: const Icon(Icons.flare), tooltip: 'Flash this phone', onPressed: () => server.identify(d)),
                   const Icon(Icons.drag_handle),
                 ]),
               );

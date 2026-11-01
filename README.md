@@ -6,6 +6,17 @@ Built with Flutter, so one codebase covers Android and iOS. Phones talk to each 
 
 ## Features
 
+### Easy to use
+- A polished look with a 3D logo, and a short tour the first time you open the app.
+- **Help & guides** (the **?** on the home screen): step-by-step instructions for starting a shoot, adding phones, adding iPhones with or without internet, pro cameras, sync by sound, timing, sharing, and fixing common problems.
+- Plain wording throughout: *Start a shoot*, *Join as a camera*, *Sync beep*, *Fine-tune timing*, *Camera order*, *Pro camera*.
+- **Updates:**
+  - **The popup:** when a new version exists, a popup shows what's new.
+  - **Android:** **Update now** downloads inside the app with a progress bar. The download is checked against the size and SHA-256 that GitHub publishes, then Android's install screen opens.
+  - **Notifications:** Android also checks every 6 hours in the background and shows a notification, even when SyncCam is closed.
+  - **iPhone:** iPhone apps can't install themselves, so the popup opens the release page; TestFlight and the App Store handle their own update notifications.
+- Name your shots (tap a shot's title) instead of reading timestamps.
+
 ### Synchronization (the core)
 - **Shared clock.** Every camera keeps estimating the host's clock over UDP, NTP-style (it takes the median of the lowest-round-trip samples and tracks drift). Each tile shows that error live (`±1.2 ms`).
 - **Scheduled triggers.** The shutter doesn't say "capture now". It says "capture at host time T", with T ≈ 800 ms ahead. Each phone arms itself (pauses live-view encoding), sleeps, then busy-waits the last 12 ms. That way Wi-Fi jitter has no effect on when the capture fires.
@@ -204,7 +215,11 @@ lib/
 assets/web/             browser camera (index.html, app.js, transport.js) and iPhone setup page;
                         CI also publishes it to GitHub Pages (the no-certificate route)
 tools/align_clips.py    desktop: frame-align a take's videos (ffmpeg + numpy); --extra for other cameras
-tool/make_icon.dart     draws the app icon
+tool/make_icon.dart     renders the 3D logo and app icons (small height-field renderer)
+lib/ui/                 theme, shared widgets, first-run tour, Help & guides, update popup
+lib/core/update_service.dart  in-app download + verify + install, background update checks
+CHANGELOG.md            "What's new" for each version, shown in the update popup
+test_screens/           renders screens to PNGs for visual review (not run in CI)
 test/                   clock sync, trigger precision, take math, TLS certificates
                         (checked by a real TLS handshake and openssl), Wi-Fi camera drivers
                         (against fake cameras), update check

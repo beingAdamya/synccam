@@ -35,7 +35,7 @@ class _CalibrationScreenState extends State<CalibrationScreen> with SingleTicker
     final tens = (milli ~/ 10) % 10;
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(backgroundColor: Colors.black, foregroundColor: Colors.white, title: const Text('Sync calibration')),
+      appBar: AppBar(backgroundColor: Colors.black, foregroundColor: Colors.white, title: const Text('Fine-tune timing')),
       body: SafeArea(
         child: Column(
           children: [
@@ -92,7 +92,7 @@ class _CalibrationScreenState extends State<CalibrationScreen> with SingleTicker
                                   builder: (_) => TakeScreen(library: widget.server.library, server: widget.server, take: _last!, calibrate: true)),
                             ),
                     icon: const Icon(Icons.tune),
-                    label: const Text('Review & calibrate'),
+                    label: const Text('Check results'),
                   ),
                 ),
               ]),
