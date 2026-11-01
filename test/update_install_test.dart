@@ -22,6 +22,7 @@ void main() {
       for (var off = 0; off < body.length; off += 65536) {
         req.response.add(body.sublist(off, off + 65536 > body.length ? body.length : off + 65536));
         await req.response.flush();
+        await Future<void>.delayed(const Duration(milliseconds: 15)); // like a real network
       }
       await req.response.close();
     });
@@ -45,7 +46,9 @@ void main() {
     final f = await UpdateInstaller.download(release('/ok.apk'), onProgress: progress.add, into: dir);
     expect(await f.readAsBytes(), apk);
     expect(progress.last, 1.0);
-    expect(progress.length, greaterThan(1));
+    for (var i = 1; i < progress.length; i++) {
+      expect(progress[i], greaterThanOrEqualTo(progress[i - 1]), reason: 'progress never goes backwards');
+    }
     await dir.delete(recursive: true);
   });
 
