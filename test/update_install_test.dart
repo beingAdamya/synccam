@@ -15,12 +15,15 @@ void main() {
 
   setUpAll(() async {
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    server.listen((req) {
+    server.listen((req) async {
       final body = req.uri.path == '/cut.apk' ? apk.sublist(0, 1000) : apk;
-      req.response
-        ..contentLength = body.length
-        ..add(body)
-        ..close();
+      req.response.contentLength = body.length;
+      // Send in pieces, like a real download, so progress updates several times.
+      for (var off = 0; off < body.length; off += 65536) {
+        req.response.add(body.sublist(off, off + 65536 > body.length ? body.length : off + 65536));
+        await req.response.flush();
+      }
+      await req.response.close();
     });
   });
   tearDownAll(() => server.close(force: true));
