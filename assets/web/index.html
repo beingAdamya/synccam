@@ -4,81 +4,179 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SyncCam">
+<meta name="theme-color" content="#050507">
+<link rel="apple-touch-icon" href="logo.png">
 <title>SyncCam camera</title>
 <style>
-  :root { color-scheme: dark; --red: #ff3d5a; --coral: #ff7a59; --green: #3ddc97; --amber: #ffb547; --dim: #a7abba; }
+  :root { color-scheme: dark; --bg: #050507; --surface: #111116; --high: #1C1C24; --accent: #5EEAD4; --text: rgba(255,255,255,.92);
+    --muted: rgba(255,255,255,.6); --ready: #39D98A; --rec: #FF3B4E; --sync: #FFC53D; --warn: #FF9F43; --lost: #FF4D6A; --cam: #5EEAD4;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { margin: 0; height: 100%; background: #000; color: #fff; overflow: hidden;
-    font: 15px/1.4 -apple-system, system-ui, sans-serif; }
-  video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
+    font: 15px/1.4 -apple-system, system-ui, "Inter", sans-serif; }
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  video#video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  .frame { position: fixed; inset: 0; pointer-events: none; border: 3px solid var(--cam); transition: border-color .2s ease-out; }
+  body.recording .frame { border-color: var(--rec); border-width: 4px; }
   .grid { position: fixed; inset: 0; pointer-events: none; display: none;
     background-image: linear-gradient(to right, transparent 33.2%, #fff6 33.3%, transparent 33.4%, transparent 66.5%, #fff6 66.6%, transparent 66.7%),
       linear-gradient(to bottom, transparent 33.2%, #fff6 33.3%, transparent 33.4%, transparent 66.5%, #fff6 66.6%, transparent 66.7%); }
-  .bar { position: fixed; left: 0; right: 0; display: flex; gap: 8px; align-items: center; padding: 10px 12px; }
-  .top { top: env(safe-area-inset-top); }
-  .bottom { bottom: env(safe-area-inset-bottom); }
-  .chip { background: #000a; border-radius: 20px; padding: 6px 12px; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .glass { background: rgba(5,5,7,.55); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+    border: 1px solid rgba(255,255,255,.12); border-top-color: rgba(255,255,255,.2); border-left-color: rgba(255,255,255,.2); }
+  .top { position: fixed; left: 0; right: 0; top: 0; padding: calc(env(safe-area-inset-top) + 12px) 12px 0; display: flex; gap: 12px; align-items: flex-start; }
+  .badge { width: 96px; height: 96px; border-radius: 27px; background: var(--cam); display: grid; place-items: center;
+    font: 800 58px/1 -apple-system, system-ui, sans-serif; font-variant-numeric: tabular-nums; flex: none; }
+  .who { min-width: 0; text-shadow: 0 0 8px #000; }
+  .who b { display: block; font-size: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .who span { color: #ffffffb3; font-size: 14px; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; margin-top: 8px; padding: 7px 13px; border-radius: 22px; font-weight: 700;
+    font-variant-numeric: tabular-nums; text-shadow: none; }
+  .pill i { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
+  .pill.ready { color: var(--ready); background: #39d98a2e; border: 1px solid #39d98a73; }
+  .pill.rec { color: var(--rec); background: #ff3b4e2e; border: 1px solid #ff3b4e73; }
+  .pill.sync { color: var(--sync); background: #ffc53d2e; border: 1px solid #ffc53d73; }
+  .pill.lost { color: var(--lost); background: #000a; border: 1.5px solid var(--lost); }
+  .pill.lost i { background: transparent; border: 2px solid currentColor; }
+  .bottom { position: fixed; left: 0; right: 0; bottom: 0; padding: 0 12px calc(env(safe-area-inset-bottom) + 12px);
+    display: flex; gap: 8px; align-items: center; }
   .spacer { flex: 1; }
-  button { font: 600 15px -apple-system, system-ui, sans-serif; border: 0; border-radius: 22px; padding: 10px 16px; background: #2c2c2eee; color: #fff; }
-  .rec { position: fixed; top: calc(env(safe-area-inset-top) + 56px); left: 50%; transform: translateX(-50%); display: none;
-    background: #c0392bdd; border-radius: 20px; padding: 6px 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .big { position: fixed; inset: 0; display: none; place-items: center; font-size: 120px; font-weight: 800; text-shadow: 0 0 30px #000; pointer-events: none; }
+  button { font: 600 15px -apple-system, system-ui, sans-serif; border: 0; border-radius: 24px; min-height: 48px; padding: 0 18px; color: #fff; background: var(--high); }
+  button.icon { width: 48px; padding: 0; position: relative; }
+  button.icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  button.on { color: var(--accent); }
+  button.attention::after { content: ''; position: absolute; right: 9px; top: 9px; width: 9px; height: 9px; border-radius: 50%; background: var(--sync); }
+  button.primary { width: 100%; background: var(--accent); color: #04231f; min-height: 56px; font-size: 17px; font-weight: 700; border-radius: 16px; }
+  button.ghost { background: transparent; color: var(--muted); }
+  button:disabled { opacity: .4; }
+  .count { position: absolute; left: -4px; top: -4px; min-width: 20px; height: 20px; border-radius: 10px; padding: 0 5px; display: none; place-items: center;
+    background: var(--accent); color: #04231f; font: 700 11px var(--mono); }
+  .sending { color: var(--muted); font: 13px var(--mono); text-shadow: 0 0 6px #000; }
+  .big { position: fixed; inset: 0; display: none; place-items: center; font: 600 120px var(--mono); text-shadow: 0 0 30px #000; pointer-events: none; }
   .overlay { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 24px; }
   .overlay.show, .big.show { display: grid; }
-  #start { display: grid; background: radial-gradient(circle at 15% 0%, #ff3d5a2e, transparent 45%),
-    radial-gradient(circle at 100% 100%, #7c5cff24, transparent 50%), linear-gradient(#161822, #0d0e13); }
-  #start .card { max-width: 420px; width: 100%; }
-  #start .logo { width: 128px; height: 128px; display: block; margin: 0 auto 8px; }
-  #start h1 { margin: 0 0 4px; font-size: 28px; font-weight: 800; letter-spacing: -0.5px; }
-  #start .session { color: var(--dim); }
-  #start input { width: 100%; padding: 15px 16px; border-radius: 16px; border: 1px solid #ffffff1f; background: #1a1c26; color: #fff; font-size: 17px; margin: 18px 0 14px; }
-  #start button.primary { width: 100%; background: linear-gradient(135deg, var(--coral), var(--red)); padding: 16px; font-size: 17px;
-    font-weight: 700; border-radius: 18px; box-shadow: 0 8px 24px #ff3d5a55; }
-  #identify { background: #fff; color: #000; font-size: 48px; font-weight: 800; }
-  #dim { background: #000; color: #555; }
-  #ended { background: #111e; }
-  .err { position: fixed; left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom) + 64px); color: var(--amber); font-size: 12px; text-shadow: 0 0 4px #000; }
-  .hint { color: #999; font-size: 13px; margin-top: 12px; }
+  #identify { background: var(--cam); font-size: 200px; font-weight: 800; pointer-events: none; }
+  #dim { background: #000; color: #666; }
+  #ended { background: rgba(5,5,7,.94); }
+  #ended h2 { margin: 0 0 8px; }
+  .err { position: fixed; left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom) + 72px); color: var(--warn); font-size: 12px;
+    text-align: center; text-shadow: 0 0 4px #000; }
+  /* Start */
+  #start { display: grid; background: radial-gradient(circle at 10% 0%, #5eead426, transparent 45%),
+    radial-gradient(circle at 100% 100%, #8b9cff26, transparent 50%), var(--bg); }
+  .card { max-width: 420px; width: 100%; text-align: left; }
+  .card .logo { width: 96px; height: 96px; display: block; margin: 0 0 16px; }
+  .card h1 { margin: 0 0 4px; font-size: 30px; font-weight: 800; letter-spacing: -0.6px; }
+  .muted { color: var(--muted); }
+  .card input { width: 100%; padding: 15px 16px; border-radius: 16px; border: 1px solid #ffffff1f; background: var(--high); color: #fff;
+    font-size: 17px; margin: 20px 0 12px; }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 14px; }
+  .private { display: flex; gap: 8px; align-items: flex-start; margin-top: 14px; padding: 12px 14px; border-radius: 16px;
+    background: #ffffff0f; border: 1px solid #ffffff1a; font-size: 13px; color: var(--muted); }
+  #startKept { display: none; margin-top: 12px; width: 100%; background: #ffc53d26; color: var(--sync); }
+  /* Sheets and prompts */
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; max-height: 80%; overflow: auto; display: none; padding: 20px 16px calc(env(safe-area-inset-bottom) + 16px);
+    border-radius: 24px 24px 0 0; background: var(--surface); border-top: 1px solid #ffffff1a; z-index: 20; }
+  .sheet.show { display: block; }
+  .sheet h3 { margin: 0 0 4px; font-size: 20px; }
+  .kept { display: flex; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid #ffffff14; }
+  .kept .thumb { width: 54px; height: 72px; object-fit: cover; border-radius: 8px; background: #000; flex: none; }
+  .kept .info { flex: 1; display: flex; flex-direction: column; gap: 2px; font-size: 13px; min-width: 0; }
+  .kept button { min-height: 40px; padding: 0 14px; font-size: 14px; }
+  .tag { align-self: flex-start; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: #ffc53d26; color: var(--sync); }
+  .tag.ok { background: #39d98a26; color: var(--ready); }
+  .tag.warn { background: #ff9f4326; color: var(--warn); }
+  .prompt { position: fixed; left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom) + 72px); display: none; align-items: center; gap: 10px;
+    padding: 10px 10px 10px 16px; border-radius: 20px; }
+  .prompt.show { display: flex; }
+  .prompt span { flex: 1; font-size: 14px; }
+  .prompt button { min-height: 40px; }
+  #a2hs { display: none; position: fixed; left: 12px; right: 12px; top: calc(env(safe-area-inset-top) + 120px); padding: 14px 16px; border-radius: 20px; font-size: 14px; }
+  #a2hs b { display: block; margin-bottom: 4px; }
+  #a2hsClose { float: right; min-height: 32px; padding: 0 12px; margin: -4px -6px 0 8px; }
+  @media (prefers-reduced-motion: reduce) { .frame { transition: none; } }
 </style>
 </head>
 <body>
   <video id="video" playsinline muted autoplay></video>
   <div class="grid" id="grid"></div>
+  <div class="frame"></div>
 
-  <div class="bar top">
-    <span class="chip" id="link"><span class="dot" id="linkDot"></span><span id="linkText">Connecting…</span></span>
-    <span class="spacer"></span>
-    <span class="chip" id="sync"><span class="dot" id="syncDot"></span><span id="syncText">Syncing clock…</span></span>
+  <div class="top">
+    <div class="badge" id="badge">1</div>
+    <div class="who">
+      <b id="camName">iPhone</b>
+      <span id="rigName"></span><br>
+      <span class="pill sync" id="pill"><i></i><span id="pillText">Connecting…</span></span>
+    </div>
   </div>
-  <div class="rec" id="rec">● REC 00:00</div>
+
+  <div id="a2hs" class="glass">
+    <button class="ghost" id="a2hsClose">Got it</button>
+    <b>Keep this tab open</b>
+    Tip: tap Share → Add to Home Screen for a full-screen camera that's harder to close by accident.
+  </div>
+
   <div class="err" id="err"></div>
-  <div class="bar bottom">
-    <button id="leave">Leave</button>
-    <button id="dimBtn">Dim</button>
+  <div class="prompt glass" id="savePrompt">
+    <span>Clip kept on this iPhone</span>
+    <button id="savePromptBtn" style="background:var(--accent);color:#04231f">Save to Photos</button>
+    <button class="icon ghost" id="savePromptClose" aria-label="Close">✕</button>
+  </div>
+
+  <div class="bottom">
+    <button class="glass" id="leave">Leave rig</button>
     <span class="spacer"></span>
-    <span class="chip" id="captures">0 captured</span>
+    <span class="sending" id="sending"></span>
+    <button class="icon glass" id="keptBtn" aria-label="On this iPhone">
+      <span class="count" id="keptCount"></span>
+      <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/></svg>
+    </button>
+    <button class="icon glass" id="gridBtn" aria-label="Framing grid">
+      <svg viewBox="0 0 24 24"><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/></svg>
+    </button>
+    <button class="icon glass" id="dimBtn" aria-label="Darken the screen">
+      <svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
   </div>
 
   <div class="big" id="count"></div>
   <div class="overlay" id="identify"></div>
-  <div class="overlay" id="dim"><div>Standby · tap to wake<br><span id="dimRec"></span></div></div>
-  <div class="overlay" id="ended"><div><h2 id="endedTitle">Session ended</h2><p id="endedText"></p><button onclick="location.reload()">Rejoin</button></div></div>
+  <div class="overlay" id="dim"><div>Tap to wake<br><span id="dimRec"></span></div></div>
+  <div class="overlay" id="ended"><div class="card" style="text-align:center"><h2 id="endedTitle">The shoot has ended</h2>
+    <p id="endedText" class="muted"></p>
+    <button class="primary" id="endedSave" style="display:none;margin-bottom:10px">Save to Photos</button>
+    <button onclick="location.reload()">Join again</button></div></div>
+
+  <div class="sheet" id="keptSheet">
+    <div style="display:flex;align-items:center;gap:8px">
+      <h3 style="flex:1">On this iPhone</h3>
+      <button class="ghost" id="keptClose">Done</button>
+    </div>
+    <p class="muted" style="margin:0 0 8px;font-size:13px">Every photo and video this iPhone takes is kept here as a backup, even if the connection drops. Save them to Photos to keep them for good.</p>
+    <button class="primary" id="keptSaveAll">Save all to Photos</button>
+    <div id="keptList"></div>
+    <p class="muted mono" id="keptUsage" style="font-size:12px"></p>
+  </div>
 
   <div class="overlay" id="start">
     <div class="card">
       <img class="logo" src="logo.png" alt="">
       <h1>Join as a camera</h1>
-      <div class="session">Shoot: <b id="sessionLabel">{{SESSION}}</b></div>
-      <input id="name" placeholder="Name for this camera" autocomplete="off">
+      <div class="muted">Rig: <b id="sessionLabel">{{SESSION}}</b></div>
+      <input id="name" placeholder="Name for this camera, e.g. Left wide" autocomplete="off">
       <button class="primary" id="startBtn">Start camera</button>
-      <div class="hint">Keep this page open with the screen on while you shoot. Your photos and videos go to the phone running the shoot, and you can save copies here too.</div>
+      <button id="startKept"></button>
+      <div class="hint">Keep this tab open with the screen on while you shoot. Every photo and video is sent to the controlling phone and kept on this iPhone too.</div>
+      <div class="private">🔒 <span id="privateText">This page only talks to the phone running SyncCam. No account, nothing is uploaded anywhere else.</span></div>
       <div class="err" id="startErr" style="position:static;margin-top:12px"></div>
     </div>
   </div>
 
 <script>window.SYNCCAM = { version: '{{VERSION}}', protocol: {{PROTOCOL}}, session: '{{SESSION}}', mode: '{{MODE}}' };</script>
+<script src="store.js"></script>
 <script src="transport.js"></script>
 <script src="app.js"></script>
 </body>

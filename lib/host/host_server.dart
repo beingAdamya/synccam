@@ -74,6 +74,19 @@ class RemoteDevice extends ChangeNotifier {
   /// Extra quarter-turns applied to this device's live view on the host.
   int viewTurns = 0;
 
+  /// Settings round-trips: the last change sent, the last one the camera
+  /// confirmed, and its note about anything it couldn't match.
+  int sentSeq = 0;
+  int appliedSeq = 0;
+  String? appliedNote;
+  bool get applying => appliedSeq < sentSeq;
+
+  /// When this camera last dropped out (to note rejoins in a take).
+  DateTime? lostAt;
+
+  /// "App" or "Browser": how this camera is connected.
+  String get kind => platform == 'web' ? 'Browser' : 'App';
+
   // Status reported by the device.
   int? battery;
   bool charging = false;
@@ -127,7 +140,8 @@ class RemoteDevice extends ChangeNotifier {
 
 /// Capture behaviour chosen on the host.
 class CaptureConfig {
-  CaptureMode mode = CaptureMode.photo;
+  /// Video first: most rigs are filming.
+  CaptureMode mode = CaptureMode.video;
 
   /// Time between pressing the shutter and the synchronized trigger. Must
   /// cover worst-case Wi-Fi delivery + arming; 600-1000 ms is comfortable.
@@ -156,6 +170,10 @@ class HostServer extends ChangeNotifier {
   HostServer({required this.sessionName, required this.library});
 
   final String sessionName;
+
+  /// Four digits shown under the QR code, for anyone who can't scan: the
+  /// joining phone finds the rig on the network by this code.
+  final String rigCode = (Random().nextInt(9000) + 1000).toString();
   final TakeLibrary library;
   HttpServer? _http;
   final ClockSyncServer _clock = ClockSyncServer();
@@ -233,7 +251,12 @@ class HostServer extends ChangeNotifier {
     }
     try {
       _registration = await nsd.register(
-        nsd.Service(name: sessionName, type: Net.serviceType, port: Net.httpPort),
+        nsd.Service(
+          name: sessionName,
+          type: Net.serviceType,
+          port: Net.httpPort,
+          txt: {'code': Uint8List.fromList(utf8.encode(rigCode))},
+        ),
       );
     } catch (e) {
       debugPrint('NSD register failed: $e');
@@ -283,7 +306,7 @@ class HostServer extends ChangeNotifier {
   }
 
   static Future<Map<String, String>> _loadWebAssets() async => {
-        for (final f in const ['index.html', 'app.js', 'transport.js', 'setup.html']) f: await rootBundle.loadString('assets/web/$f'),
+        for (final f in const ['index.html', 'app.js', 'transport.js', 'store.js', 'setup.html']) f: await rootBundle.loadString('assets/web/$f'),
       };
 
   /// Link an iPhone opens (plain HTTP) to set up trust and reach the camera page.
@@ -362,7 +385,7 @@ class HostServer extends ChangeNotifier {
           await _sendPage(req, 'setup.html');
         case '/' when req.requestedUri.scheme == 'https':
           await _sendPage(req, 'index.html');
-        case '/app.js' || '/transport.js':
+        case '/app.js' || '/transport.js' || '/store.js':
           await _sendPage(req, req.uri.path.substring(1), type: ContentType('text', 'javascript', charset: 'utf-8'));
         case '/':
           // Plain HTTP root: send browsers to the setup page.
@@ -453,7 +476,9 @@ class HostServer extends ChangeNotifier {
     final d = _devices.putIfAbsent(id, () => RemoteDevice(id));
     d.lastIp = ip ?? d.lastIp;
     d.link?.close();
+    final rejoinedMidTake = !isNew && d.lostAt != null && activeVideoTake != null;
     d.link = link;
+    d.lostAt = null;
     d.name = m['name'] as String? ?? d.name;
     d.platform = m['platform'] as String? ?? '';
     d.model = m['model'] as String? ?? '';
@@ -472,6 +497,12 @@ class HostServer extends ChangeNotifier {
       if (d.slot >= 1 << 20 || _slotTaken(d)) {
         d.slot = _devices.values.where((x) => x != d).fold(-1, (a, x) => x.slot > a ? x.slot : a) + 1;
       }
+    }
+    if (rejoinedMidTake) {
+      final take = activeVideoTake!;
+      final at = DateTime.now().difference(take.createdAt);
+      take.notes.add('${d.name} rejoined at ${at.inMinutes}:${(at.inSeconds % 60).toString().padLeft(2, '0')}');
+      unawaited(take.save());
     }
     d.send(Msg.welcome, {'session': sessionName, 'slot': d.slot});
     _sendPolicy(d);
@@ -505,7 +536,9 @@ class HostServer extends ChangeNotifier {
           ok: false));
     }
     d.link = null;
-    d.recording = false;
+    d.lostAt = DateTime.now();
+    // A camera that was recording keeps recording on its own; its clip
+    // still arrives when it rejoins.
     d.changed();
     notifyListeners();
   }
@@ -547,6 +580,14 @@ class HostServer extends ChangeNotifier {
         take.addCapture(d, m);
         take.save();
         library.changed();
+        notifyListeners();
+      case Msg.applied:
+        final seq = (m['seq'] as num?)?.toInt() ?? 0;
+        if (seq >= d.appliedSeq) {
+          d.appliedSeq = seq;
+          d.appliedNote = m['note'] as String?;
+        }
+        d.changed();
         notifyListeners();
       case Msg.bye:
         // Left on purpose: remove the tile rather than show it offline.
@@ -617,8 +658,20 @@ class HostServer extends ChangeNotifier {
 
   // ------------------------------------------------------------ settings
 
-  void _sendSettings(RemoteDevice d) =>
-      d.send(Msg.settings, {'s': global.merged(d.override).toJson()});
+  int _settingsSeq = 0;
+
+  void _sendSettings(RemoteDevice d) {
+    d.sentSeq = ++_settingsSeq;
+    d.send(Msg.settings, {'s': global.merged(d.override).toJson(), 'seq': d.sentSeq});
+    // Cameras from before 0.6.0 never confirm; don't leave them spinning.
+    final seq = d.sentSeq;
+    Timer(const Duration(seconds: 6), () {
+      if (d.appliedSeq < seq && d.sentSeq == seq) {
+        d.appliedSeq = seq;
+        d.changed();
+      }
+    });
+  }
 
   void _sendPolicy(RemoteDevice d) => d.send(Msg.policy, {
         'autoUpload': config.autoUpload,
@@ -784,14 +837,19 @@ class HostServer extends ChangeNotifier {
       for (final d in onlineDevices) TakeDevice(d.id, d.name, d.slot, d.model, d.trimMs),
     ]);
     library.add(t);
-    t.save();
+    t.save().then((_) async {
+      // Remember what each camera saw, for the gallery thumbnails.
+      for (final d in onlineDevices) {
+        final jpeg = d.frame.value;
+        if (jpeg != null) await File('${t.dir.path}/thumb_${d.id}.jpg').writeAsBytes(jpeg).catchError((_) => File(''));
+      }
+    });
     return t;
   }
 
   /// The big shutter button.
   void shutter() {
     if (onlineDevices.isEmpty) return;
-    HapticFeedback.mediumImpact();
     switch (config.mode) {
       case CaptureMode.photo:
         _photo(count: 1);

@@ -7,8 +7,11 @@ import 'host_server.dart';
 /// Connect a dedicated camera (any brand) that can lead the rig: its own
 /// record button starts and stops every phone.
 class ExternalCameraScreen extends StatefulWidget {
-  const ExternalCameraScreen({super.key, required this.server});
+  const ExternalCameraScreen({super.key, required this.server, this.initial});
   final HostServer server;
+
+  /// A camera to fill in (e.g. one the network scan found).
+  final ExternalConfig? initial;
 
   @override
   State<ExternalCameraScreen> createState() => _ExternalCameraScreenState();
@@ -27,7 +30,7 @@ class _ExternalCameraScreenState extends State<ExternalCameraScreen> {
   @override
   void initState() {
     super.initState();
-    final c = server.external?.config;
+    final c = widget.initial ?? server.external?.config;
     _kind = c?.kind ?? ExternalKind.gopro;
     _host.text = c?.host ?? _kind.defaultHost;
     _port.text = '${c?.port ?? _kind.defaultPort}';

@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.5.0+6
+version: 0.6.0+7
 
 environment:
   sdk: ^3.13.5
@@ -83,19 +83,22 @@ flutter:
     - assets/web/
     - assets/icon/logo3d.png
 
-  # Poppins (SIL Open Font License, assets/fonts/OFL.txt)
+  # Inter and JetBrains Mono (SIL Open Font License, assets/fonts/OFL-*.txt)
   fonts:
-    - family: Poppins
+    - family: Inter
       fonts:
-        - asset: assets/fonts/Poppins-Regular.ttf
-        - asset: assets/fonts/Poppins-Medium.ttf
+        - asset: assets/fonts/Inter-400.ttf
+        - asset: assets/fonts/Inter-500.ttf
           weight: 500
-        - asset: assets/fonts/Poppins-SemiBold.ttf
+        - asset: assets/fonts/Inter-600.ttf
           weight: 600
-        - asset: assets/fonts/Poppins-Bold.ttf
+        - asset: assets/fonts/Inter-700.ttf
           weight: 700
-        - asset: assets/fonts/Poppins-ExtraBold.ttf
-          weight: 800
+    - family: JetBrainsMono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono-400.ttf
+        - asset: assets/fonts/JetBrainsMono-600.ttf
+          weight: 600
 
   # To add assets to your application, add an assets section, like this:
   # assets:

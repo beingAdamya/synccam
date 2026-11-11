@@ -119,7 +119,7 @@ jobs:
 
           **iPhone:** \`SyncCam-$TAG-ios-unsigned.ipa\` is not signed, so iOS won't install it as is. Either sign it on your computer with your Apple ID using Sideloadly or AltStore (free account: the app expires after 7 days), or use \`codemagic.yaml\` to get a signed TestFlight build.
 
-          **iPhone without installing anything:** on the host phone open Add cameras → "iPhone, no app" and scan the QR code with the iPhone Camera app. No certificate needed; internet only while joining. (No internet? Use the "Offline" tab, which needs a one-time certificate install.)
+          **iPhone without installing anything:** on the controlling phone tap Add camera → "iPhone" and scan the code with the iPhone Camera app. No certificate needed; internet only while joining. Every photo and video is also kept on the iPhone (tap the photos button, then Save to Photos). (No internet? Use the "Offline" tab, which needs a one-time certificate install.)
 
           Not yet tested on physical devices.
           NOTES
@@ -149,7 +149,7 @@ jobs:
           mkdir -p site/cam
           sed -e "s/{{MODE}}/rtc/; s/{{VERSION}}/$VERSION/; s/{{PROTOCOL}}/$PROTOCOL/; s/{{SESSION}}//g" \
             assets/web/index.html > site/cam/index.html
-          cp assets/web/app.js assets/web/transport.js assets/web/logo.png site/cam/
+          cp assets/web/app.js assets/web/transport.js assets/web/store.js assets/web/logo.png site/cam/
           printf '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=https://github.com/%s">SyncCam' \
             "$GITHUB_REPOSITORY" > site/index.html
           touch site/.nojekyll

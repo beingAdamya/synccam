@@ -8,6 +8,8 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../core/clock.dart';
 import '../core/util.dart';
 import '../core/widgets.dart';
+import '../ui/theme.dart';
+import '../ui/widgets.dart';
 import 'camera_node.dart';
 
 /// Full-screen viewfinder shown on a phone that has joined a session as a
@@ -24,6 +26,11 @@ class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
   Timer? _ticker;
   bool _dimmed = false;
   bool _closing = false;
+  bool _grid = false;
+
+  /// The screen flashes this camera's colour once when it joins.
+  bool _joinFlash = false;
+  LinkState? _lastLink;
 
   CameraNode get node => widget.node;
 
@@ -42,6 +49,8 @@ class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
 
   void _changed() {
     if (!mounted) return;
+    if (node.link == LinkState.connected && _lastLink != LinkState.connected) _flashJoin();
+    _lastLink = node.link;
     setState(() {});
     if (node.ended == 'host' && !_closing) {
       _closing = true;
@@ -60,15 +69,25 @@ class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _flashJoin() async {
+    // Wait for the rig to assign this camera its number.
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    if (!mounted || MediaQuery.of(context).disableAnimations) return;
+    HapticFeedback.lightImpact();
+    setState(() => _joinFlash = true);
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+    if (mounted) setState(() => _joinFlash = false);
+  }
+
   Future<void> _confirmLeave() async {
     if (_closing) return;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Leave this shoot?'),
+        title: const Text('Leave the rig?'),
         content: Text(node.recording
             ? 'This camera is recording. Leaving stops and saves its clip.'
-            : "This camera will be removed from the host's rig."),
+            : 'This camera will leave the rig.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Stay')),
           FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Leave')),
@@ -102,73 +121,86 @@ class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final c = node.controller;
     final identify = node.identifyUntil != null && DateTime.now().isBefore(node.identifyUntil!);
+    final color = CameraColors.forSlot(node.slot);
     return PopScope(
       canPop: _closing,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _confirmLeave();
       },
       child: Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          if (c != null && c.value.isInitialized)
-            Center(child: CameraPreview(c, child: node.settings.showGrid ? const _Grid() : null))
-          else if (node.lastError != null && node.controller == null)
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.all(32),
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(node.cameraBlocked ? Icons.no_photography : Icons.error_outline, size: 48, color: Colors.white54),
-                  const SizedBox(height: 12),
-                  Text(node.lastError!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white)),
-                  const SizedBox(height: 16),
-                  FilledButton.icon(
-                    onPressed: node.retryCamera,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Try again'),
-                  ),
-                ]),
-              ),
-            )
-          else
-            const Center(child: CircularProgressIndicator()),
-          SafeArea(child: _overlay(context)),
-          if (_countdownText() case final t?)
+        backgroundColor: Colors.black,
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (c != null && c.value.isInitialized)
+              Center(child: CameraPreview(c, child: _grid || node.settings.showGrid ? const _Grid() : null))
+            else if (node.lastError != null && node.controller == null)
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(node.cameraBlocked ? Icons.no_photography_rounded : Icons.error_outline_rounded,
+                        size: 48, color: Colors.white54),
+                    const SizedBox(height: 12),
+                    Text(node.lastError!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white)),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: node.retryCamera,
+                      icon: const Icon(Icons.refresh_rounded),
+                      label: const Text('Try again'),
+                    ),
+                  ]),
+                ),
+              )
+            else
+              const Center(child: CircularProgressIndicator()),
+            // The camera's own colour as a thin frame, so people across a
+            // room can match it to its tile; red while recording.
             IgnorePointer(
-              child: Center(
-                child: Text(t,
-                    style: const TextStyle(
-                        fontSize: 120,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white,
-                        shadows: [Shadow(blurRadius: 24)])),
-              ),
-            ),
-          if (identify)
-            Container(
-              color: Colors.white,
-              alignment: Alignment.center,
-              child: Text('#${node.slot + 1}\n${node.identity.name}',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 56, fontWeight: FontWeight.w800, color: Colors.black)),
-            ),
-          if (_dimmed)
-            GestureDetector(
-              onTap: () => setState(() => _dimmed = false),
-              child: Container(
-                color: Colors.black,
-                alignment: Alignment.center,
-                child: Text(
-                  '${node.identity.name}\n${node.recording ? '● REC' : 'Standby'}\n\nTap to wake',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: node.recording ? Colors.red : Colors.white24, fontSize: 18),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                decoration: BoxDecoration(
+                  border: Border.all(color: node.recording ? Status.recording : color, width: node.recording ? 4 : 3),
                 ),
               ),
             ),
-        ],
+            SafeArea(child: _overlay(context, color)),
+            if (_countdownText() case final t?)
+              IgnorePointer(
+                child: Center(
+                  child: Text(t,
+                      style: mono(size: 120, color: Colors.white, weight: FontWeight.w600)
+                          .copyWith(shadows: const [Shadow(blurRadius: 24)])),
+                ),
+              ),
+            if (identify || _joinFlash)
+              IgnorePointer(
+                child: Container(
+                  color: color,
+                  alignment: Alignment.center,
+                  child: Text('${node.slot + 1}',
+                      style: TextStyle(fontSize: 200, fontWeight: FontWeight.w800, color: CameraColors.on(color))),
+                ),
+              ),
+            if (_dimmed)
+              GestureDetector(
+                onTap: () => setState(() => _dimmed = false),
+                child: Container(
+                  color: Colors.black,
+                  alignment: Alignment.center,
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Opacity(opacity: 0.5, child: NumberBadge(node.slot, size: 64)),
+                    const SizedBox(height: 16),
+                    Text(node.recording ? 'Recording' : 'Standby',
+                        style: TextStyle(color: node.recording ? Status.recording : Colors.white38, fontSize: 18)),
+                    const SizedBox(height: 8),
+                    const Text('Tap to wake', style: TextStyle(color: Colors.white24)),
+                  ]),
+                ),
+              ),
+          ],
+        ),
       ),
-    ),
     );
   }
 
@@ -180,81 +212,102 @@ class _NodeScreenState extends State<NodeScreen> with WidgetsBindingObserver {
     return remain.ceil().toString();
   }
 
-  Widget _overlay(BuildContext context) {
-    final clock = node.clock;
-    final linkColor = switch (node.link) {
-      LinkState.connected => Colors.greenAccent,
-      LinkState.connecting => Colors.amber,
-      LinkState.disconnected => Colors.redAccent,
-    };
+  Widget _status() {
     final rec = node.recordStartLocalUs;
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(12),
-          child: Row(
-            children: [
-              _chip(Icons.circle, linkColor,
-                  '#${node.slot + 1} ${node.identity.name}${node.sessionName.isEmpty ? '' : ' · ${node.sessionName}'}'),
-              const Spacer(),
-              if (clock != null)
-                _chip(clock.isSynced ? Icons.check_circle : Icons.sync, clock.isSynced ? Colors.greenAccent : Colors.amber,
-                    clock.isSynced ? 'Synced ±${clock.errorMs.toStringAsFixed(1)} ms' : 'Syncing clock…'),
-            ],
-          ),
-        ),
-        if (rec != null)
-          Every(const Duration(milliseconds: 500),
-              builder: (_) => _chip(Icons.fiber_manual_record, Colors.red,
-                  'REC ${formatDuration(Duration(microseconds: MonoClock.nowUs() - rec))}')),
-        const Spacer(),
-        if (node.lastError != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Text(node.lastError!,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.orangeAccent, fontSize: 11)),
-          ),
-        Padding(
-          padding: const EdgeInsets.all(12),
-          child: Row(
-            children: [
-              FilledButton.tonalIcon(
-                onPressed: _confirmLeave,
-                icon: const Icon(Icons.logout),
-                label: const Text('Leave'),
-              ),
-              const SizedBox(width: 8),
-              IconButton.filledTonal(
-                tooltip: 'Darken the screen (saves battery, keeps recording)',
-                onPressed: () => setState(() => _dimmed = true),
-                icon: const Icon(Icons.brightness_2),
-              ),
-              const Spacer(),
-              _chip(Icons.photo_library, Colors.white70, '${node.capturesThisSession}'),
-              if (node.pendingUploads > 0) ...[
-                const SizedBox(width: 8),
-                _chip(Icons.upload, Colors.lightBlueAccent, '${node.pendingUploads}'),
-              ],
-            ],
-          ),
-        ),
-        const Text('Controlled by host', style: TextStyle(color: Colors.white38, fontSize: 11)),
-        const SizedBox(height: 4),
-      ],
-    );
+    if (node.link != LinkState.connected) {
+      return const StatusPill('Lost: reconnecting', color: Status.lost, icon: Icons.link_off_rounded, outlined: true, big: true);
+    }
+    if (rec != null) {
+      return Every(const Duration(milliseconds: 500),
+          builder: (_) => StatusPill('Recording ${formatDuration(Duration(microseconds: MonoClock.nowUs() - rec))}',
+              color: Status.recording, icon: Icons.fiber_manual_record_rounded, big: true));
+    }
+    final clock = node.clock;
+    if (clock == null || !clock.isSynced || node.controller == null) {
+      return const StatusPill('Syncing…', color: Status.syncing, icon: Icons.sync_rounded, big: true);
+    }
+    return const StatusPill('Ready', color: Status.ready, icon: Icons.check_circle_rounded, big: true);
   }
 
-  Widget _chip(IconData icon, Color color, String text) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(20)),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, size: 12, color: color),
-          const SizedBox(width: 6),
-          Text(text, style: const TextStyle(color: Colors.white, fontSize: 13)),
-        ]),
-      );
+  Widget _overlay(BuildContext context, Color color) {
+    Widget glassButton(IconData icon, String tip, VoidCallback onTap, {bool on = false}) => Padding(
+          padding: const EdgeInsets.only(left: 8),
+          child: VideoGlass(
+            radius: 24,
+            child: IconButton(
+              tooltip: tip,
+              icon: Icon(icon, color: on ? context.sync.accent : Colors.white),
+              onPressed: onTap,
+            ),
+          ),
+        );
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        children: [
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            NumberBadge(node.slot, size: 96),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(node.identity.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700, shadows: [Shadow(blurRadius: 8)])),
+                if (node.sessionName.isNotEmpty)
+                  Text(node.sessionName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white70, shadows: [Shadow(blurRadius: 8)])),
+                const SizedBox(height: 8),
+                _status(),
+              ]),
+            ),
+          ]),
+          const Spacer(),
+          if (node.lastError != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(node.lastError!,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Status.warning, fontSize: 12, shadows: [Shadow(blurRadius: 6)])),
+            ),
+          Row(children: [
+            VideoGlass(
+              radius: 24,
+              child: TextButton.icon(
+                style: TextButton.styleFrom(foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 16)),
+                onPressed: _confirmLeave,
+                icon: const Icon(Icons.logout_rounded),
+                label: const Text('Leave rig'),
+              ),
+            ),
+            const Spacer(),
+            if (node.pendingUploads > 0)
+              VideoGlass(
+                radius: 20,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  const Icon(Icons.upload_rounded, size: 16, color: Colors.white),
+                  const SizedBox(width: 4),
+                  Text('${node.pendingUploads}', style: mono(size: 13, color: Colors.white)),
+                ]),
+              ),
+            glassButton(Icons.grid_3x3_rounded, _grid ? 'Hide grid' : 'Show framing grid', () => setState(() => _grid = !_grid),
+                on: _grid),
+            glassButton(Icons.brightness_2_rounded, 'Darken the screen (keeps recording)',
+                () => setState(() => _dimmed = true)),
+          ]),
+          const SizedBox(height: 6),
+          const Text('The controlling phone decides everything else.',
+              style: TextStyle(color: Colors.white54, fontSize: 12, shadows: [Shadow(blurRadius: 6)])),
+        ],
+      ),
+    );
+  }
 }
 
 class _Grid extends StatelessWidget {

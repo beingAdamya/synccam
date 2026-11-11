@@ -20,6 +20,7 @@ class Msg {
   static const error = 'error';
   static const caps = 'caps';
   static const bye = 'bye'; // camera is leaving on purpose
+  static const applied = 'applied'; // settings taken, with notes on any it couldn't match
 
   // host -> node
   static const welcome = 'welcome';

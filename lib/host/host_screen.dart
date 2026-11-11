@@ -1,27 +1,33 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
-import '../core/protocol.dart';
-import '../core/updates.dart';
+import '../core/prefs.dart';
 import '../node/camera_node.dart';
+import '../ui/cam_status.dart';
+import '../ui/theme.dart';
+import '../ui/widgets.dart';
+import 'add_cameras.dart';
 import 'calibration_screen.dart';
-import 'device_detail_screen.dart';
-import 'device_tile.dart';
 import 'external_camera_screen.dart';
 import 'gallery_screen.dart';
 import 'host_server.dart';
-import 'host_settings_screen.dart';
-import 'rig_order_screen.dart';
-import 'sync_panel.dart';
+import 'live_wall.dart';
+import 'recent_rigs.dart';
+import 'settings_tab.dart';
 import 'take.dart';
 
+/// The controller: a floating glass dock with Rig (live wall and shooting),
+/// Gallery and Settings.
 class HostScreen extends StatefulWidget {
-  const HostScreen({super.key, required this.sessionName, required this.hostIsCamera, required this.library});
+  const HostScreen({
+    super.key,
+    required this.sessionName,
+    required this.hostIsCamera,
+    required this.library,
+  });
   final String sessionName;
   final bool hostIsCamera;
   final TakeLibrary library;
@@ -31,13 +37,19 @@ class HostScreen extends StatefulWidget {
 }
 
 class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
-  late final HostServer server = HostServer(sessionName: widget.sessionName, library: widget.library);
+  late final HostServer server = HostServer(
+    sessionName: widget.sessionName,
+    library: widget.library,
+  );
   StreamSubscription<CaptureReport>? _reportSub;
   bool _ending = false;
   CameraNode? _localNode;
-  Timer? _ticker;
-  bool _flash = false;
   bool _wasSuspended = false;
+  int _tab = 0;
+
+  // For haptics on rig-wide changes.
+  bool _wasAllReady = false;
+  int _lostBefore = 0;
 
   @override
   void initState() {
@@ -45,35 +57,21 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     WakelockPlus.enable();
     server.addListener(_changed);
-    server.slateFlash.addListener(_onSlate);
     server.start().then((_) async {
       if (widget.hostIsCamera && server.startError == null) {
-        // The host phone joins its own session over loopback, so it behaves
+        // The controller joins its own rig over loopback, so it behaves
         // exactly like every other camera.
         final id = await NodeIdentity.load();
         final node = CameraNode(hostAddress: '127.0.0.1', identity: id);
-        node.addListener(_changed);
         await node.start();
         if (mounted) setState(() => _localNode = node);
       }
     });
-    // Only the countdown needs a screen-wide tick; REC clocks tick in place.
-    _ticker = Timer.periodic(const Duration(milliseconds: 200), (_) {
-      if (server.nextTriggerUs != null) setState(() {});
-    });
     _reportSub = server.reports.listen((r) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(
-          duration: const Duration(seconds: 5),
-          backgroundColor: r.ok ? Colors.green.shade800 : Colors.orange.shade900,
-          content: Row(children: [
-            Icon(r.ok ? Icons.check_circle : Icons.warning_amber, color: Colors.white),
-            const SizedBox(width: 12),
-            Expanded(child: Text(r.text, style: const TextStyle(color: Colors.white))),
-          ]),
-        ));
+      if (!mounted || r.ok) return;
+      // Successful shots are shown by the flash and the ticks; only
+      // problems need words.
+      showSnack(context, r.text, duration: const Duration(seconds: 5));
     });
   }
 
@@ -84,15 +82,24 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('End this shoot?'),
-        content: Text([
-          if (recording) 'Recording is still on. It will be stopped and saved first.',
-          'The ${server.onlineDevices.length} connected cameras will be let go.',
-          'Your photos and videos stay in the Gallery.',
-        ].join('\n\n')),
+        content: Text(
+          [
+            if (recording)
+              'Recording is still on. It will be stopped and saved first.',
+            'The ${server.onlineDevices.length} connected cameras will be let go.',
+            'Your photos and videos stay in the Gallery.',
+          ].join('\n\n'),
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            style: FilledButton.styleFrom(
+              backgroundColor: Status.recording,
+              foregroundColor: Colors.white,
+            ),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('End shoot'),
           ),
@@ -101,13 +108,16 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
     );
     if (ok != true || !mounted) return;
     _ending = true;
+    await RecentRigs.remember(server, hostIsCamera: widget.hostIsCamera);
     server.wrapUpCaptures();
     if (recording || server.pendingFiles > 0) {
-      // Keep the host up until the cameras' files have arrived.
+      if (!mounted) return;
+      // Keep the controller up until the cameras' files have arrived.
       await showDialog<void>(
         context: context,
         barrierDismissible: false,
-        builder: (_) => _FinishingDialog(server: server, waitForStop: recording),
+        builder: (_) =>
+            _FinishingDialog(server: server, waitForStop: recording),
       );
     }
     server.endSession();
@@ -116,13 +126,14 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
   }
 
   void _changed() {
+    final all = server.devices;
+    final allReady = all.isNotEmpty && all.every((d) => statusOf(d).isReady);
+    if (allReady && !_wasAllReady) Haptic.allReady();
+    _wasAllReady = allReady;
+    final lost = all.where((d) => !d.online).length;
+    if (lost > _lostBefore) Haptic.warning();
+    _lostBefore = lost;
     if (mounted) setState(() {});
-  }
-
-  void _onSlate() async {
-    setState(() => _flash = true);
-    await Future<void>.delayed(const Duration(milliseconds: 150));
-    if (mounted) setState(() => _flash = false);
   }
 
   @override
@@ -143,7 +154,6 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _ticker?.cancel();
     _reportSub?.cancel();
     _localNode?.dispose();
     server.removeListener(_changed);
@@ -152,479 +162,253 @@ class _HostScreenState extends State<HostScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  void _showJoinInfo() {
-    showModalBottomSheet<void>(context: context, builder: (_) => _JoinInfo(server: server));
-  }
+  void _addCameras() => Navigator.push(
+    context,
+    MaterialPageRoute<void>(builder: (_) => AddCamerasScreen(server: server)),
+  );
+
+  Widget _menu() => PopupMenuButton<String>(
+    tooltip: 'More',
+    icon: const Icon(Icons.more_horiz_rounded, color: Colors.white),
+    onSelected: (v) {
+      switch (v) {
+        case 'add':
+          _addCameras();
+        case 'cam':
+          Navigator.push(
+            context,
+            MaterialPageRoute<void>(
+              builder: (_) => ExternalCameraScreen(server: server),
+            ),
+          );
+        case 'cal':
+          Navigator.push(
+            context,
+            MaterialPageRoute<void>(
+              builder: (_) => CalibrationScreen(server: server),
+            ),
+          );
+        case 'end':
+          _endSession();
+      }
+    },
+    itemBuilder: (_) => const [
+      PopupMenuItem(
+        value: 'add',
+        child: ListTile(
+          leading: Icon(Icons.add_rounded),
+          title: Text('Add camera'),
+        ),
+      ),
+      PopupMenuItem(
+        value: 'cam',
+        child: ListTile(
+          leading: Icon(Icons.videocam_rounded),
+          title: Text('Wi-Fi camera'),
+        ),
+      ),
+      PopupMenuItem(
+        value: 'cal',
+        child: ListTile(
+          leading: Icon(Icons.timer_outlined),
+          title: Text('Fine-tune timing'),
+        ),
+      ),
+      PopupMenuDivider(),
+      PopupMenuItem(
+        value: 'end',
+        child: ListTile(
+          leading: Icon(Icons.stop_circle_outlined, color: Status.recording),
+          title: Text('End shoot', style: TextStyle(color: Status.recording)),
+        ),
+      ),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) {
-    final devices = server.devices;
+    final mq = MediaQuery.of(context);
+    final landscape = mq.size.width > mq.size.height;
+    final choice = AppPrefs.theme.value;
+    // Video is always judged on a dark, neutral surround.
+    final rigTheme = buildTheme(
+      choice == ThemeChoice.daylight ? ThemeChoice.studio : choice,
+    );
+    const dockSize = 64.0;
+
+    final pages = [
+      Theme(
+        data: rigTheme,
+        child: LiveWall(
+          server: server,
+          onAddCameras: _addCameras,
+          menu: _menu(),
+          dockInset: landscape
+              ? EdgeInsets.only(left: dockSize + 12 + mq.padding.left)
+              : EdgeInsets.only(bottom: dockSize + 8 + mq.padding.bottom),
+        ),
+      ),
+      AppBackground(
+        child: Padding(
+          padding: landscape
+              ? EdgeInsets.only(left: dockSize + 20 + mq.padding.left)
+              : EdgeInsets.only(bottom: dockSize + 16 + mq.padding.bottom),
+          child: GalleryView(library: server.library, server: server),
+        ),
+      ),
+      AppBackground(
+        child: Padding(
+          padding: landscape
+              ? EdgeInsets.only(left: dockSize + 20 + mq.padding.left)
+              : EdgeInsets.only(bottom: dockSize + 16 + mq.padding.bottom),
+          child: SettingsTab(server: server, onEnd: _endSession),
+        ),
+      ),
+    ];
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _endSession();
+        if (didPop) return;
+        if (_tab != 0) {
+          setState(() => _tab = 0);
+        } else {
+          _endSession();
+        }
       },
-      child: Stack(
-      children: [
-        Scaffold(
-          appBar: AppBar(
-            title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(widget.sessionName),
-              SyncChip(server: server),
-            ]),
-            actions: [
-              IconButton(tooltip: 'Add cameras', icon: const Icon(Icons.qr_code), onPressed: _showJoinInfo),
-              IconButton(
-                tooltip: 'Gallery',
-                icon: const Icon(Icons.photo_library_outlined),
-                onPressed: () => Navigator.push(
-                    context, MaterialPageRoute<void>(builder: (_) => GalleryScreen(library: server.library, server: server))),
-              ),
-              PopupMenuButton<String>(
-                onSelected: (v) {
-                  if (v == 'end') {
-                    _endSession();
-                    return;
-                  }
-                  final page = switch (v) {
-                    'rig' => RigOrderScreen(server: server),
-                    'cam' => ExternalCameraScreen(server: server),
-                    'cal' => CalibrationScreen(server: server),
-                    _ => HostSettingsScreen(server: server),
-                  };
-                  Navigator.push(context, MaterialPageRoute<void>(builder: (_) => page));
-                },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'cam', child: Text('Pro camera (Sony, Canon, Nikon…)')),
-                  PopupMenuItem(value: 'rig', child: Text('Camera order')),
-                  PopupMenuItem(value: 'cal', child: Text('Fine-tune timing')),
-                  PopupMenuItem(value: 'settings', child: Text('Settings')),
-                  PopupMenuDivider(),
-                  PopupMenuItem(
-                    value: 'end',
-                    child: ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: Icon(Icons.stop_circle_outlined, color: Colors.redAccent),
-                      title: Text('End shoot', style: TextStyle(color: Colors.redAccent)),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          body: Column(
-            children: [
-              if (server.outdatedDevices case final out when out.isNotEmpty)
-                MaterialBanner(
-                  leading: Icon(Icons.system_update, color: out.any((d) => d.incompatible) ? Colors.redAccent : Colors.amber),
-                  content: Text('${out.length} camera${out.length == 1 ? ' runs' : 's run'} a different SyncCam version '
-                      'than this host (${AppVersion.current}): ${out.map((d) => d.name).join(', ')}. '
-                      'Update every phone to the same version for reliable sync.'),
-                  actions: const [SizedBox()],
-                ),
-              ExternalCameraStrip(
-                server: server,
-                onTap: () => Navigator.push(
-                    context, MaterialPageRoute<void>(builder: (_) => ExternalCameraScreen(server: server))),
-              ),
-              if (server.startError != null)
-                MaterialBanner(content: Text(server.startError!), actions: const [SizedBox()]),
-              Expanded(
-                child: devices.isEmpty
-                    ? _JoinInfo(server: server, big: true)
-                    : LayoutBuilder(builder: (context, c) {
-                        final cols = c.maxWidth > 900 ? 4 : c.maxWidth > 600 ? 3 : 2;
-                        return GridView.builder(
-                          padding: const EdgeInsets.all(8),
-                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: cols,
-                            childAspectRatio: 3 / 4,
-                            mainAxisSpacing: 8,
-                            crossAxisSpacing: 8,
-                          ),
-                          itemCount: devices.length,
-                          itemBuilder: (_, i) => DeviceTile(
-                            device: devices[i],
-                            server: server,
-                            onTap: () => Navigator.push(
-                              context,
-                              MaterialPageRoute<void>(
-                                  builder: (_) => DeviceDetailScreen(server: server, device: devices[i])),
-                            ),
-                          ),
-                        );
-                      }),
-              ),
-              ControlPanel(server: server),
-            ],
-          ),
-        ),
-        if (_localNode?.controller case final CameraController c? when c.value.isInitialized)
-          Positioned(
-            right: 12,
-            top: MediaQuery.of(context).padding.top + kToolbarHeight + 8,
-            width: 72,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Stack(children: [
-                CameraPreview(c),
-                const Positioned(
-                    left: 4,
-                    top: 2,
-                    child: Text('this phone', style: TextStyle(color: Colors.white, fontSize: 9))),
-              ]),
+      child: Scaffold(
+        backgroundColor: _tab == 0 ? Colors.black : context.sync.background,
+        body: Stack(
+          children: [
+            Positioned.fill(
+              child: IndexedStack(index: _tab, children: pages),
             ),
-          ),
-        if (_countdown() case final t?)
-          IgnorePointer(
-            child: Center(
-              child: Text(t,
-                  style: const TextStyle(
-                      fontSize: 140,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white,
-                      decoration: TextDecoration.none,
-                      shadows: [Shadow(blurRadius: 30)])),
-            ),
-          ),
-        if (_flash) const IgnorePointer(child: ColoredBox(color: Colors.white, child: SizedBox.expand())),
-      ],
-    ),
-    );
-  }
-
-  String? _countdown() {
-    final t = server.nextTriggerUs;
-    if (t == null) return null;
-    final remain = (t - server.nowUs()) / 1e6;
-    if (remain < 0.9) return null;
-    return remain.ceil().toString();
-  }
-}
-
-/// Bottom panel: mode, the shutter, and the settings every camera shares.
-class ControlPanel extends StatelessWidget {
-  const ControlPanel({super.key, required this.server});
-  final HostServer server;
-
-  @override
-  Widget build(BuildContext context) {
-    final g = server.global;
-    final cfg = server.config;
-    final scheme = Theme.of(context).colorScheme;
-    final busy = server.anyRecording || server.intervalRunning;
-    final maxZoom = server.onlineDevices.isEmpty
-        ? 10.0
-        : server.onlineDevices.map((d) => d.maxZoom).reduce((a, b) => a > b ? a : b).clamp(1.0, 20.0);
-
-    return Material(
-      color: scheme.surfaceContainer,
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SegmentedButton<CaptureMode>(
-                showSelectedIcon: false,
-                segments: const [
-                  ButtonSegment(value: CaptureMode.photo, label: Text('Photo'), icon: Icon(Icons.photo_camera)),
-                  ButtonSegment(value: CaptureMode.burst, label: Text('Burst'), icon: Icon(Icons.burst_mode)),
-                  ButtonSegment(value: CaptureMode.video, label: Text('Video'), icon: Icon(Icons.videocam)),
-                  ButtonSegment(value: CaptureMode.interval, label: Text('Time-lapse'), icon: Icon(Icons.timelapse)),
-                ],
-                selected: {cfg.mode},
-                onSelectionChanged: busy
-                    ? null
-                    : (s) {
-                        cfg.mode = s.first;
-                        server.updatePolicy();
-                      },
-              ),
-              const SizedBox(height: 6),
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(children: [
-                  _toggle(context, g.lens == LensChoice.front ? Icons.camera_front : Icons.camera_rear,
-                      g.lens == LensChoice.front ? 'Front' : 'Back', true, () {
-                    server.updateGlobal(
-                        (s) => s.lens = s.lens == LensChoice.back ? LensChoice.front : LensChoice.back);
-                  }),
-                  _toggle(context, _flashIcon(g.flash), g.flash.name, g.flash != FlashChoice.off, () {
-                    server.updateGlobal((s) => s.flash = FlashChoice.values[(s.flash.index + 1) % 4]);
-                  }),
-                  _toggle(context, Icons.wb_sunny_outlined, 'Lock light', g.exposureLocked,
-                      () => server.updateGlobal((s) => s.exposureLocked = !s.exposureLocked)),
-                  _toggle(context, Icons.center_focus_strong, 'Lock focus', g.focusLocked,
-                      () => server.updateGlobal((s) => s.focusLocked = !s.focusLocked)),
-                  _toggle(context, Icons.grid_on, 'Grid', g.showGrid,
-                      () => server.updateGlobal((s) => s.showGrid = !s.showGrid)),
-                  _toggle(context, g.enableAudio ? Icons.mic : Icons.mic_off, 'Audio', g.enableAudio,
-                      () => server.updateGlobal((s) => s.enableAudio = !s.enableAudio)),
-                  PopupMenuButton<ResChoice>(
-                    initialValue: g.resolution,
-                    onSelected: (r) => server.updateGlobal((s) => s.resolution = r),
-                    itemBuilder: (_) => [
-                      for (final r in ResChoice.values) PopupMenuItem(value: r, child: Text(_resLabel(r))),
-                    ],
-                    child: Chip(avatar: const Icon(Icons.high_quality, size: 18), label: Text(_resLabel(g.resolution))),
-                  ),
-                ]),
-              ),
-              Row(children: [
-                const SizedBox(width: 44, child: Text('Zoom')),
-                Expanded(
-                  child: Slider(
-                    min: 1,
-                    max: maxZoom,
-                    value: g.zoom.clamp(1, maxZoom),
-                    label: '${g.zoom.toStringAsFixed(1)}×',
-                    divisions: ((maxZoom - 1) * 10).round().clamp(1, 200),
-                    onChanged: (v) => server.updateGlobal((s) => s.zoom = v),
-                  ),
-                ),
-                SizedBox(width: 40, child: Text('${g.zoom.toStringAsFixed(1)}×')),
-              ]),
-              Row(children: [
-                const SizedBox(width: 44, child: Text('EV')),
-                Expanded(
-                  child: Slider(
-                    min: -3,
-                    max: 3,
-                    divisions: 18,
-                    value: g.exposureOffset.clamp(-3, 3),
-                    label: g.exposureOffset.toStringAsFixed(1),
-                    onChanged: (v) => server.updateGlobal((s) => s.exposureOffset = v),
-                  ),
-                ),
-                SizedBox(width: 40, child: Text(g.exposureOffset.toStringAsFixed(1))),
-              ]),
-              Row(
-                children: [
-                  Expanded(
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: DropdownButton<int>(
-                        value: cfg.countdownSec,
-                        underline: const SizedBox(),
-                        items: const [
-                          DropdownMenuItem(value: 0, child: Text('No timer')),
-                          DropdownMenuItem(value: 3, child: Text('3 s')),
-                          DropdownMenuItem(value: 5, child: Text('5 s')),
-                          DropdownMenuItem(value: 10, child: Text('10 s')),
-                        ],
-                        onChanged: (v) {
-                          cfg.countdownSec = v ?? 0;
-                          server.updatePolicy();
-                        },
-                      ),
+            if (landscape)
+              Positioned(
+                left: 8 + mq.padding.left,
+                top: 0,
+                bottom: 0,
+                child: Center(
+                  child: Theme(
+                    data: rigTheme,
+                    child: _Dock(
+                      tab: _tab,
+                      vertical: true,
+                      onTab: _setTab,
+                      server: server,
                     ),
                   ),
-                  _Shutter(server: server),
-                  Expanded(
-                    child: Align(
-                      alignment: Alignment.centerRight,
-                      child: FilledButton.tonalIcon(
-                        onPressed: server.slate,
-                        icon: const Icon(Icons.campaign),
-                        label: const Text('Sync beep'),
-                      ),
+                ),
+              )
+            else
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 8 + mq.padding.bottom,
+                child: Center(
+                  child: Theme(
+                    data: rigTheme,
+                    child: _Dock(
+                      tab: _tab,
+                      vertical: false,
+                      onTab: _setTab,
+                      server: server,
                     ),
                   ),
-                ],
+                ),
               ),
-            ],
-          ),
+          ],
         ),
       ),
     );
   }
 
-  static String _resLabel(ResChoice r) => switch (r) {
-        ResChoice.low => '240p',
-        ResChoice.medium => '480p',
-        ResChoice.high => '720p',
-        ResChoice.veryHigh => '1080p',
-        ResChoice.ultraHigh => '4K',
-        ResChoice.max => 'Max',
-      };
+  void _setTab(int i) {
+    if (i == _tab) return;
+    Haptic.tick();
+    setState(() => _tab = i);
+  }
+}
 
-  static IconData _flashIcon(FlashChoice f) => switch (f) {
-        FlashChoice.off => Icons.flash_off,
-        FlashChoice.auto => Icons.flash_auto,
-        FlashChoice.always => Icons.flash_on,
-        FlashChoice.torch => Icons.flashlight_on,
-      };
+class _Dock extends StatelessWidget {
+  const _Dock({
+    required this.tab,
+    required this.vertical,
+    required this.onTab,
+    required this.server,
+  });
+  final int tab;
+  final bool vertical;
+  final ValueChanged<int> onTab;
+  final HostServer server;
 
-  Widget _toggle(BuildContext context, IconData icon, String label, bool on, VoidCallback onTap) => Padding(
-        padding: const EdgeInsets.only(right: 6),
-        child: FilterChip(
-          avatar: Icon(icon, size: 18),
-          label: Text(label),
-          selected: on,
-          showCheckmark: false,
-          onSelected: (_) => onTap(),
+  @override
+  Widget build(BuildContext context) {
+    final accent = context.sync.accent;
+    Widget item(int i, IconData icon, String label) {
+      final sel = tab == i;
+      final rec = i == 0 && server.anyRecording;
+      return Semantics(
+        selected: sel,
+        button: true,
+        label: label,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(24),
+          onTap: () => onTab(i),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            constraints: const BoxConstraints(minWidth: 56, minHeight: 48),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            decoration: BoxDecoration(
+              color: sel
+                  ? Colors.white.withValues(alpha: 0.14)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  icon,
+                  color: rec
+                      ? Status.recording
+                      : (sel ? accent : Colors.white70),
+                  size: 22,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: sel ? Colors.white : Colors.white60,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       );
-}
+    }
 
-class _Shutter extends StatelessWidget {
-  const _Shutter({required this.server});
-  final HostServer server;
-
-  @override
-  Widget build(BuildContext context) {
-    final mode = server.config.mode;
-    final active = (mode == CaptureMode.video && server.anyRecording) ||
-        (mode == CaptureMode.interval && server.intervalRunning);
-    final isVideoish = mode == CaptureMode.video || mode == CaptureMode.interval;
-    final enabled = server.onlineDevices.isNotEmpty;
-    return GestureDetector(
-      onTap: enabled
-          ? () {
-              // Warn, but never block: the moment may not come again.
-              final warnings = active ? const <String>[] : server.preflightWarnings();
-              if (warnings.isNotEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(warnings.join('\n'))));
-              }
-              server.shutter();
-            }
-          : null,
-      child: Container(
-        width: 76,
-        height: 76,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          border: Border.all(color: enabled ? Colors.white : Colors.white24, width: 4),
-        ),
-        padding: const EdgeInsets.all(5),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          decoration: BoxDecoration(
-            color: !enabled
-                ? Colors.white24
-                : isVideoish
-                    ? Colors.red
-                    : Colors.white,
-            borderRadius: BorderRadius.circular(active ? 8 : 40),
-          ),
-          margin: EdgeInsets.all(active ? 14 : 0),
-        ),
-      ),
+    final items = [
+      item(0, Icons.grid_view_rounded, 'Rig'),
+      item(1, Icons.photo_library_rounded, 'Gallery'),
+      item(2, Icons.settings_rounded, 'Settings'),
+    ];
+    return VideoGlass(
+      radius: 30,
+      padding: const EdgeInsets.all(6),
+      child: vertical
+          ? Column(mainAxisSize: MainAxisSize.min, children: items)
+          : Row(mainAxisSize: MainAxisSize.min, children: items),
     );
   }
 }
 
-class _JoinInfo extends StatefulWidget {
-  const _JoinInfo({required this.server, this.big = false});
-  final HostServer server;
-  final bool big;
-
-  @override
-  State<_JoinInfo> createState() => _JoinInfoState();
-}
-
-/// How to add cameras: the app (auto-discovery or QR), or an iPhone browser
-/// with no app installed.
-class _JoinInfoState extends State<_JoinInfo> {
-  // 0 = app, 1 = iPhone browser via GitHub Pages (no certificate),
-  // 2 = iPhone browser offline (certificate route)
-  int _mode = 0;
-
-  @override
-  Widget build(BuildContext context) {
-    final server = widget.server;
-    return ListenableBuilder(
-      listenable: server.rtc,
-      builder: (context, _) {
-        final ip = server.addresses.isEmpty ? null : server.addresses.first;
-        final rtc = server.rtc;
-        final qrSize = widget.big ? 220.0 : 180.0;
-        final (String? qr, String help) = switch (_mode) {
-          1 => (
-              rtc.ready ? rtc.joinUrl : null,
-              'Scan with the iPhone\'s Camera app; it opens in Safari. Tap Start camera: no app, '
-                  'no certificate. Needs internet only while joining; video and files then go phone to phone.'
-            ),
-          2 => (
-              server.webJoinUrl,
-              'For shoots with no internet. Scan with the iPhone\'s Camera app; the page walks through a '
-                  'one-time certificate install, then the iPhone joins in Safari.'
-            ),
-          _ => (
-              ip == null ? null : 'synccam://$ip:${Net.httpPort}',
-              'On each phone open SyncCam → "Join as camera". This host appears automatically, or scan this code.'
-            ),
-        };
-        return SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(widget.big ? 'Add your cameras' : 'Add cameras', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 12),
-              SegmentedButton<int>(
-                showSelectedIcon: false,
-                segments: const [
-                  ButtonSegment(value: 0, icon: Icon(Icons.phone_android), label: Text('App')),
-                  ButtonSegment(value: 1, icon: Icon(Icons.language), label: Text('iPhone, no app')),
-                  ButtonSegment(value: 2, icon: Icon(Icons.wifi_off), label: Text('Offline')),
-                ],
-                selected: {_mode},
-                onSelectionChanged: (v) => setState(() => _mode = v.first),
-              ),
-              const SizedBox(height: 12),
-              Text(help, textAlign: TextAlign.center),
-              const SizedBox(height: 4),
-              const Text('All phones must be on the same Wi-Fi or this phone\'s hotspot.',
-                  textAlign: TextAlign.center, style: TextStyle(color: Colors.white60, fontSize: 12)),
-              const SizedBox(height: 16),
-              if (qr != null)
-                Container(
-                  color: Colors.white,
-                  padding: const EdgeInsets.all(12),
-                  child: QrImageView(data: qr, size: qrSize),
-                )
-              else if (_mode == 1)
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text(rtc.status, textAlign: TextAlign.center, style: const TextStyle(color: Colors.orange)),
-                ),
-              const SizedBox(height: 12),
-              if (server.addresses.isEmpty && _mode != 1)
-                const Text('No network found. Connect to Wi-Fi or turn on a hotspot.',
-                    style: TextStyle(color: Colors.orange))
-              else if (_mode == 1 && rtc.ready)
-                Text(rtc.status, textAlign: TextAlign.center, style: const TextStyle(color: Colors.greenAccent))
-              else if (_mode == 2) ...[
-                SelectableText(server.webJoinUrl ?? '',
-                    textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleMedium),
-                if (server.httpsError != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Text(server.httpsError!, style: const TextStyle(color: Colors.orange)),
-                  ),
-                if (server.caFingerprint case final fp?)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Text('Certificate fingerprint: ${fp.substring(0, 23)}…',
-                        style: const TextStyle(color: Colors.white38, fontSize: 11)),
-                  ),
-              ] else if (_mode == 0)
-                SelectableText(server.addresses.map((a) => '$a:${Net.httpPort}').join('\n'),
-                    textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleMedium),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-/// Waits for recordings to stop and files to reach the host before a session
-/// ends, so "End session" never loses footage. "End now" skips the wait;
-/// cameras keep their own copies in Photos either way.
+/// Waits for recordings to stop and files to reach the controller before a
+/// shoot ends, so "End shoot" never loses footage.
 class _FinishingDialog extends StatefulWidget {
   const _FinishingDialog({required this.server, required this.waitForStop});
   final HostServer server;
@@ -644,9 +428,13 @@ class _FinishingDialogState extends State<_FinishingDialog> {
     _poll = Timer.periodic(const Duration(milliseconds: 500), (_) {
       final s = widget.server;
       // Camera status arrives every 2 s, so give a stop at least 3 s to show up.
-      final settled = !widget.waitForStop || DateTime.now().difference(_since) > const Duration(seconds: 3);
-      final busy = s.onlineDevices.any((d) => d.recording) || s.pendingFiles > 0;
-      final timedOut = DateTime.now().difference(_since) > const Duration(minutes: 3);
+      final settled =
+          !widget.waitForStop ||
+          DateTime.now().difference(_since) > const Duration(seconds: 3);
+      final busy =
+          s.onlineDevices.any((d) => d.recording) || s.pendingFiles > 0;
+      final timedOut =
+          DateTime.now().difference(_since) > const Duration(minutes: 3);
       if ((settled && !busy) || timedOut) {
         _poll.cancel();
         if (mounted) Navigator.of(context).pop();
@@ -668,18 +456,27 @@ class _FinishingDialogState extends State<_FinishingDialog> {
     final rec = s.onlineDevices.where((d) => d.recording).length;
     return AlertDialog(
       title: const Text('Saving everything…'),
-      content: Row(children: [
-        const CircularProgressIndicator(),
-        const SizedBox(width: 20),
-        Expanded(
-          child: Text(rec > 0
-              ? 'Stopping recording on $rec camera${rec == 1 ? '' : 's'}…'
-              : s.pendingFiles > 0
+      content: Row(
+        children: [
+          const CircularProgressIndicator(),
+          const SizedBox(width: 20),
+          Expanded(
+            child: Text(
+              rec > 0
+                  ? 'Stopping recording on $rec camera${rec == 1 ? '' : 's'}…'
+                  : s.pendingFiles > 0
                   ? 'Receiving ${s.pendingFiles} file${s.pendingFiles == 1 ? '' : 's'} from the cameras…'
-                  : 'Saving…'),
+                  : 'Saving…',
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('End now'),
         ),
-      ]),
-      actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('End now'))],
+      ],
     );
   }
 }

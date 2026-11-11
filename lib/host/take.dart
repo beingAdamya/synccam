@@ -62,6 +62,26 @@ class Take {
   final List<int> slates = [];
   String label = '';
 
+  /// "Take 14": counts up on this phone and never changes.
+  int number = 0;
+
+  /// Things worth knowing about this take, e.g. "Camera 4 rejoined at 0:31".
+  final List<String> notes = [];
+
+  /// Length of the longest clip, when known.
+  Duration? get length {
+    int? best;
+    for (final it in items) {
+      final a = it.timing['startReturnedHostUs'] ?? it.timing['startCalledHostUs'];
+      final b = it.timing['stopReturnedHostUs'] ?? it.timing['stopCalledHostUs'];
+      if (a != null && b != null && b > a) best = max(best ?? 0, b - a);
+    }
+    return best == null ? null : Duration(microseconds: best);
+  }
+
+  /// Angles that have a file on this phone.
+  int get anglesHere => {for (final it in items) if (it.file != null) it.deviceId}.length;
+
   /// The Wi-Fi camera that led this take, if any: model, and when its
   /// recording start was seen (host clock).
   Map<String, dynamic>? external;
@@ -137,16 +157,42 @@ class Take {
 
   File? fileFor(TakeItem it) => it.file == null ? null : File('${dir.path}/${it.file}');
 
+  /// A small picture of what [deviceId] saw: its photo, or for video the
+  /// last live frame before recording started.
+  File? thumbFor(String deviceId) {
+    for (final it in items) {
+      if (it.deviceId == deviceId && it.kind == 'photo' && it.file != null) {
+        final f = fileFor(it)!;
+        if (f.existsSync()) return f;
+      }
+    }
+    final t = File('${dir.path}/thumb_$deviceId.jpg');
+    return t.existsSync() ? t : null;
+  }
+
+  /// Devices in rig order.
+  List<TakeDevice> get angles => [...devices]..sort((a, b) => a.slot.compareTo(b.slot));
+
+  /// Removes one file from this take (from this phone only).
+  Future<void> removeItem(TakeItem it) async {
+    final f = fileFor(it);
+    items.remove(it);
+    if (f != null && await f.exists()) await f.delete();
+    await save();
+  }
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'kind': kind,
         'label': label,
+        'number': number,
         'createdAt': createdAt.toIso8601String(),
         'scheduledHostUs': scheduledHostUs,
         'staggerMs': staggerMs,
         'devices': devices.map((d) => d.toJson()).toList(),
         'items': items.map((i) => i.toJson()).toList(),
         'slatesHostUs': slates,
+        if (notes.isNotEmpty) 'notes': notes,
         if (external != null) 'externalCamera': external,
         'headTrimsMs': headTrimsMs(),
         'spreadMs': {for (var s = 0; s < shots; s++) '$s': spreadMs(s)},
@@ -176,6 +222,8 @@ class Take {
           [for (final d in (j['devices'] as List)) TakeDevice.fromJson((d as Map).cast<String, dynamic>())],
         );
         t.label = j['label'] as String? ?? '';
+        t.number = (j['number'] as num?)?.toInt() ?? 0;
+        t.notes.addAll(((j['notes'] as List?) ?? const []).cast<String>());
         t.external = (j['externalCamera'] as Map?)?.cast<String, dynamic>();
         for (final i in (j['items'] as List)) {
           t.items.add(TakeItem.fromJson((i as Map).cast<String, dynamic>()));
@@ -201,12 +249,47 @@ class TakeLibrary extends ChangeNotifier {
     final lib = TakeLibrary._(Directory('${(await getApplicationDocumentsDirectory()).path}/takes'));
     await lib.dir.create(recursive: true);
     lib.takes.addAll(await Take.loadAll(lib.dir));
+    // Takes from before 0.6.0 get numbers in the order they were shot.
+    var n = lib.takes.fold(0, (a, t) => max(a, t.number));
+    for (final t in lib.takes.reversed) {
+      if (t.number == 0) t.number = ++n;
+    }
     return lib;
   }
 
+  /// A library in [dir], without loading (tests).
+  @visibleForTesting
+  factory TakeLibrary.at(Directory dir) => TakeLibrary._(dir);
+
+  int get nextNumber => takes.fold(0, (a, t) => max(a, t.number)) + 1;
+
   void add(Take t) {
+    if (t.number == 0) t.number = nextNumber;
     takes.insert(0, t);
     notifyListeners();
+  }
+
+  /// Hides takes from the gallery; [purge] deletes them, [restore] undoes.
+  void remove(Iterable<Take> list) {
+    for (final t in list.toList()) {
+      takes.remove(t);
+    }
+    notifyListeners();
+  }
+
+  void restore(Iterable<Take> list) {
+    for (final t in list) {
+      if (!takes.contains(t)) takes.add(t);
+    }
+    takes.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    notifyListeners();
+  }
+
+  Future<void> purge(Iterable<Take> list) async {
+    for (final t in list) {
+      if (takes.contains(t)) continue;
+      if (await t.dir.exists()) await t.dir.delete(recursive: true);
+    }
   }
 
   Take? byId(String? id) {

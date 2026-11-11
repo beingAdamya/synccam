@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -25,6 +26,7 @@ class _JoinScreenState extends State<JoinScreen> {
   NodeIdentity? _identity;
   final _ipCtl = TextEditingController();
   final _nameCtl = TextEditingController();
+  final _codeCtl = TextEditingController();
   String? _discoveryError;
 
   @override
@@ -57,6 +59,7 @@ class _JoinScreenState extends State<JoinScreen> {
     final d = _discovery;
     if (d != null) nsd.stopDiscovery(d);
     _ipCtl.dispose();
+    _codeCtl.dispose();
     _nameCtl.dispose();
     super.dispose();
   }
@@ -95,53 +98,87 @@ class _JoinScreenState extends State<JoinScreen> {
     _join(uri.host, uri.hasPort ? uri.port : Net.httpPort);
   }
 
+  /// Finds the rig showing this 4-digit code among those on the network.
+  void _joinCode() {
+    final code = _codeCtl.text.replaceAll(RegExp(r'\D'), '');
+    if (code.length != 4) return;
+    for (final s in _discovery?.services ?? const <nsd.Service>[]) {
+      final raw = s.txt?['code'];
+      if (raw != null && utf8.decode(raw, allowMalformed: true) == code) {
+        _joinService(s);
+        return;
+      }
+    }
+    showSnack(context, 'No rig with code $code on this Wi-Fi yet. Check both phones are on the same network.');
+  }
+
   @override
   Widget build(BuildContext context) {
     final services = _discovery?.services ?? const <nsd.Service>[];
     final t = Theme.of(context).textTheme;
+    final c = context.sync;
     return Scaffold(
       appBar: AppBar(title: const Text('Join as a camera')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 32),
         children: [
-          Text('Connect this phone to the same Wi-Fi (or hotspot) as the phone running the shoot, then pick the shoot below.',
-              style: t.bodyMedium?.copyWith(color: Brand.textDim)),
+          Text('Be on the same Wi-Fi (or hotspot) as the controlling phone, then scan its code.',
+              style: t.bodyMedium?.copyWith(color: c.muted)),
           const SizedBox(height: 16),
-          TextField(
-            controller: _nameCtl,
-            decoration: const InputDecoration(labelText: 'Name for this camera', prefixIcon: Icon(Icons.badge_outlined)),
+          PrimaryButton(label: 'Scan code', icon: Icons.qr_code_scanner_rounded, onPressed: _scan),
+          const SizedBox(height: 16),
+          GlassCard(
+            padding: const EdgeInsets.all(16),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Can\'t scan? Type the 4-digit code', style: t.titleSmall),
+              const SizedBox(height: 10),
+              Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: _codeCtl,
+                    keyboardType: TextInputType.number,
+                    maxLength: 4,
+                    textAlign: TextAlign.center,
+                    style: mono(size: 26, weight: FontWeight.w600),
+                    decoration: const InputDecoration(counterText: '', hintText: '0000'),
+                    onChanged: (v) {
+                      if (v.length == 4) _joinCode();
+                    },
+                  ),
+                ),
+                const SizedBox(width: 10),
+                FilledButton(onPressed: _joinCode, child: const Text('Join')),
+              ]),
+            ]),
           ),
-          const SectionTitle('Shoots nearby'),
+          const SectionTitle('Rigs nearby'),
           if (_discoveryError != null)
-            Text('Can\'t look for shoots automatically on this network. Use Scan code instead.',
-                style: t.bodyMedium?.copyWith(color: Brand.warn)),
+            Text('Can\'t look for rigs automatically on this network. Use Scan code instead.',
+                style: t.bodyMedium?.copyWith(color: Status.warning)),
           if (services.isEmpty && _discoveryError == null)
             GlassCard(
               child: Row(children: [
                 const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5)),
                 const SizedBox(width: 16),
-                Expanded(
-                  child: Text('Looking for shoots… Make sure both phones are on the same Wi-Fi.',
-                      style: t.bodyMedium?.copyWith(color: Brand.textDim)),
-                ),
+                Expanded(child: Text('Looking for rigs…', style: t.bodyMedium?.copyWith(color: c.muted))),
               ]),
             ),
           for (final svc in services) ...[
             ActionCard(
-              icon: Icons.videocam_rounded,
-              color: Brand.good,
-              title: svc.name ?? 'SyncCam shoot',
+              icon: Icons.grid_view_rounded,
+              title: svc.name ?? 'SyncCam rig',
               subtitle: 'Tap to join',
               highlight: true,
               onTap: () => _joinService(svc),
             ),
             const SizedBox(height: 10),
           ],
-          const SizedBox(height: 16),
-          PrimaryButton(label: 'Scan code', icon: Icons.qr_code_scanner_rounded, onPressed: _scan),
-          const SizedBox(height: 6),
-          Text('The code is under "Add cameras" on the controlling phone.',
-              textAlign: TextAlign.center, style: t.bodySmall),
+          const SectionTitle('This camera'),
+          TextField(
+            controller: _nameCtl,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: const InputDecoration(labelText: 'Name, e.g. Left wide', prefixIcon: Icon(Icons.badge_outlined)),
+          ),
           ExpansionTile(
             tilePadding: const EdgeInsets.symmetric(horizontal: 4),
             title: Text('Type the address instead', style: t.titleSmall),

@@ -82,7 +82,7 @@ function connect() {
   link = make({
     camId: ID,
     join: JOIN,
-    onStatus: (text) => { $('linkText').textContent = text; },
+    onStatus: (text) => { $('pillText').textContent = text; },
     onOpen: () => {
       // A reconnect may reach a restarted host whose clock differs: never
       // reuse samples measured against the previous connection.
@@ -91,6 +91,7 @@ function connect() {
       send('hello', { id: ID, name, platform: 'web', model: deviceModel(), v: S.protocol, app: S.version });
       sendCaps();
       pingBurst(30, 25);
+      resumeUploads();
     },
     onText: (text) => onMessage(JSON.parse(text)),
     onClose: (why) => {
@@ -158,6 +159,7 @@ async function openCameraNow(s) {
   cameraReady = true;
   await applyLive(s);
   sendCaps();
+  render();
 }
 
 // Only these need a new camera stream. Compare loosely: the host sends
@@ -167,19 +169,47 @@ const needsReopen = (a, b) => (a.lens || 'back') !== (b.lens || 'back') ||
   (a.resolution || 'veryHigh') !== (b.resolution || 'veryHigh') ||
   (a.fps || 0) !== (b.fps || 0) || (a.enableAudio !== false) !== (b.enableAudio !== false);
 
+// Applies settings and returns notes on anything this browser couldn't match.
 async function applySettings(next) {
   const prev = settings;
   settings = next;
-  $('grid').style.display = next.showGrid ? 'block' : 'none';
-  if (recorder) return applyLive(next); // never cut a recording
-  if (!stream || needsReopen(prev, next)) return openCamera(next).catch(cameraError);
-  return applyLive(next);
+  if (next.showGrid) $('grid').style.display = 'block';
+  const notes = [];
+  if (recorder) {
+    if (needsReopen(prev, next)) notes.push('Format changes after recording');
+    return notes.concat(await applyLive(next)); // never cut a recording
+  }
+  if (!stream || needsReopen(prev, next)) {
+    try {
+      await openCamera(next);
+    } catch (e) {
+      cameraError(e);
+      return ["Camera didn't start"];
+    }
+    return notes.concat(lastMissing, formatNotes(next));
+  }
+  return notes.concat(await applyLive(next));
+}
+
+// What the camera actually delivered, when it's less than asked for.
+function formatNotes(s) {
+  const track = stream && stream.getVideoTracks()[0];
+  const got = track && track.getSettings ? track.getSettings() : {};
+  const out = [];
+  const want = RES[s.resolution] || RES.veryHigh;
+  const short = Math.min(got.width || 0, got.height || 0);
+  if (short && short < Math.min(want[0], want[1]) * 0.9) out.push(`Used ${short}p`);
+  if (s.fps && got.frameRate && got.frameRate < s.fps - 1) {
+    out.push(`This iPhone can't do ${s.fps} fps in the browser; using ${Math.round(got.frameRate)}`);
+  }
+  return out;
 }
 
 // Browsers expose only some controls; anything unsupported is reported, not fatal.
+let lastMissing = [];
 async function applyLive(s) {
   const track = stream && stream.getVideoTracks()[0];
-  if (!track || !track.applyConstraints) return;
+  if (!track || !track.applyConstraints) return [];
   const adv = {}, missing = [];
   if (caps.zoom) adv.zoom = Math.min(caps.zoom.max, Math.max(caps.zoom.min, s.zoom || 1));
   else if ((s.zoom || 1) !== 1) missing.push('zoom');
@@ -191,11 +221,13 @@ async function applyLive(s) {
   if (caps.exposureMode) adv.exposureMode = s.exposureLocked ? 'manual' : 'continuous';
   try {
     if (Object.keys(adv).length) await track.applyConstraints({ advanced: [adv] });
-    lastError = missing.length ? 'This browser can\'t control: ' + missing.join(', ') : null;
+    lastError = null;
   } catch (e) {
-    lastError = 'camera control: ' + e.message;
+    lastError = 'Camera control: ' + e.message;
   }
   renderErr();
+  lastMissing = missing.map((m) => `Can't use ${m} in the browser`);
+  return lastMissing;
 }
 
 function cameraError(e) {
@@ -249,7 +281,6 @@ function grabPreview() {
 
 // ------------------------------------------------------------- capture
 let captures = 0, pendingUploads = 0, countdownLocal = null;
-const copies = []; // recent captures the user can save from this page
 
 // Grab the frame at the trigger instant and encode in the background, so a
 // slow JPEG encode never delays the next shot of a burst. Saved photos are
@@ -362,23 +393,63 @@ async function stopVideo(m) {
   render();
 }
 
-let autoUpload = true, keepCopy = true;
+// ------------------------------------------------- keeping and uploading
+// Every capture is written to this iPhone's storage first (the backup),
+// then sent to the controlling phone. Anything not yet sent is retried
+// whenever the connection comes back, even after a reload.
+let autoUpload = true;
+let stored = []; // what's kept on this iPhone, newest first
+const uploading = new Set();
+
+async function refreshStored() {
+  stored = await Store.list();
+  pendingUploads = stored.filter((r) => !r.uploaded && r.session === sessionKey()).length;
+  render();
+}
+const sessionKey = () => (JOIN.session || S.session || '') + '|' + (JOIN.room || location.host);
+
 async function deliver(blob, take, shot, kind, ext) {
-  if (keepCopy) {
-    copies.unshift({ blob, name: `SyncCam_${take}_${shot}.${ext}`, kind });
-    copies.splice(12); // keep memory bounded
+  const rec = {
+    id: `${take}_${shot}_${kind}`, take, shot, kind, ext, blob, size: blob.size, created: Date.now(),
+    name: `SyncCam_${(sessionName || 'rig').replace(/[^\w-]+/g, '_')}_${take}_${shot + 1}.${ext}`,
+    session: sessionKey(), uploaded: false, saved: false,
+  };
+  const durable = await Store.put(rec);
+  if (!durable) {
+    lastError = 'This browser is not keeping files after the tab closes (private browsing?). Save clips to Photos before leaving.';
+    renderErr();
   }
+  await refreshStored();
+  if (kind === 'video') showSavePrompt();
+  if (autoUpload) upload(rec);
+}
+
+async function upload(rec) {
+  if (uploading.has(rec.id) || rec.uploaded) return;
+  uploading.add(rec.id);
+  try {
+    for (let a = 0; a < 3; a++) {
+      try {
+        if (link && link.isOpen() && await link.upload(rec.blob, { device: ID, take: rec.take, shot: rec.shot, kind: rec.kind, ext: rec.ext })) {
+          rec.uploaded = true;
+          await Store.update(rec.id, { uploaded: true });
+          break;
+        }
+      } catch (e) { lastError = 'Sending: ' + e.message; }
+      await sleep(2000 << a);
+    }
+  } finally {
+    uploading.delete(rec.id);
+    refreshStored();
+  }
+}
+
+// Called when the connection opens: send anything this rig hasn't received.
+async function resumeUploads() {
   if (!autoUpload) return;
-  pendingUploads++;
-  render();
-  for (let a = 0; a < 3; a++) {
-    try {
-      if (link && await link.upload(blob, { device: ID, take, shot, kind, ext })) break;
-    } catch (e) { lastError = 'upload: ' + e.message; }
-    await sleep(2000 << a);
+  for (const r of await Store.list()) {
+    if (!r.uploaded && r.session === sessionKey()) upload(r);
   }
-  pendingUploads--;
-  render();
 }
 
 function sendStatus() {
@@ -393,8 +464,19 @@ function sendStatus() {
 function onMessage(m) {
   switch (m.t) {
     case 'pong': return onPong(m);
-    case 'welcome': sessionName = m.session || sessionName; slot = m.slot || 0; return render();
-    case 'settings': return applySettings(m.s);
+    case 'welcome': {
+      const first = !joined;
+      joined = true;
+      sessionName = m.session || sessionName;
+      slot = m.slot || 0;
+      render();
+      if (first) flashColour();
+      return;
+    }
+    case 'settings':
+      return applySettings(m.s).then((notes) => {
+        if (m.seq != null) send('applied', notes && notes.length ? { seq: m.seq, note: notes.join(' · ') } : { seq: m.seq });
+      });
     case 'capturePhoto': return capturePhotos(m);
     case 'startVideo': return startVideo(m);
     case 'stopVideo': return stopVideo(m);
@@ -404,7 +486,7 @@ function onMessage(m) {
       Object.assign(preview, { on: m.on !== false, fps: m.fps || preview.fps, max: m.max || preview.max, q: (m.q || 55) / 100 });
       return restartPreview();
     case 'rename': name = m.name; localStorage.setItem('synccam.name', name); return render();
-    case 'policy': autoUpload = m.autoUpload !== false; keepCopy = m.keepCopy !== false; return;
+    case 'policy': autoUpload = m.autoUpload !== false; return;
     case 'countdown': return countdown(m.at);
     case 'endSession': return end('host');
   }
@@ -417,72 +499,195 @@ async function focusAt(x, y) {
 }
 
 // ------------------------------------------------------------------ UI
+// Each camera keeps one number and colour everywhere (same list as the app).
+const COLOURS = ['#5EEAD4', '#8B9CFF', '#FFC53D', '#FF7AB6', '#4FC3F7', '#B5E853', '#FF8A65', '#B388FF'];
+const colour = () => COLOURS[slot % COLOURS.length];
+let joined = false, linkState = 'connecting';
+
 function setLink(state) {
-  $('linkDot').style.background = state === 'connected' ? 'var(--green)' : state === 'connecting' ? 'var(--amber)' : 'var(--red)';
+  linkState = state;
   render();
 }
+
+function status() {
+  if (linkState !== 'connected') return ['lost', 'Lost: reconnecting'];
+  if (recorder) {
+    const s = Math.max(0, Math.floor((hostNow() - recStartReturned) / 1e6));
+    const hh = String(Math.floor(s / 3600)).padStart(2, '0');
+    const mm = String(Math.floor(s / 60) % 60).padStart(2, '0');
+    return ['rec', `Recording ${hh}:${mm}:${String(s % 60).padStart(2, '0')}`];
+  }
+  if (!synced() || !cameraReady) return ['sync', 'Syncing…'];
+  return ['ready', 'Ready'];
+}
+
 function render() {
-  $('linkText').textContent = `#${slot + 1} ${name}${sessionName ? ' · ' + sessionName : ''}`;
-  $('captures').textContent = `${captures} captured${pendingUploads ? ' · ↑' + pendingUploads : ''}${copies.length ? ' · save' : ''}`;
-  $('rec').style.display = recorder ? 'block' : 'none';
-  $('dimRec').textContent = recorder ? '● REC' : '';
+  const c = colour();
+  document.documentElement.style.setProperty('--cam', c);
+  const badge = $('badge');
+  badge.textContent = String(slot + 1);
+  badge.style.color = lum(c) > 0.4 ? '#000' : '#fff';
+  $('camName').textContent = name;
+  $('rigName').textContent = sessionName || '';
+  const [kind, text] = status();
+  const pill = $('pill');
+  pill.className = 'pill ' + kind;
+  $('pillText').textContent = text;
+  document.body.classList.toggle('recording', !!recorder);
+  const unsaved = stored.filter((r) => !r.saved).length;
+  $('keptCount').textContent = stored.length ? String(stored.length) : '';
+  $('keptCount').style.display = stored.length ? 'grid' : 'none';
+  $('keptBtn').classList.toggle('attention', unsaved > 0);
+  $('sending').textContent = pendingUploads ? `Sending ${pendingUploads}…` : '';
+  $('dimRec').textContent = recorder ? 'Recording' : 'Standby';
   renderErr();
 }
-function renderSync() {
-  $('syncDot').style.background = synced() ? 'var(--green)' : 'var(--amber)';
-  $('syncText').textContent = synced() ? `Synced ±${(clock.bestRtt / 2000).toFixed(1)} ms` : 'Syncing clock…';
-}
+function renderSync() { render(); }
 function renderErr() { $('err').textContent = lastError || ''; }
+function lum(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const ch = [n >> 16, (n >> 8) & 255, n & 255].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+}
+
 setInterval(() => {
-  if (recorder) {
-    const s = Math.floor((hostNow() - recStartReturned) / 1e6);
-    $('rec').textContent = `● REC ${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
-  }
+  if (recorder || linkState !== 'connected') render();
   const c = $('count');
   if (countdownLocal) {
     const rem = (countdownLocal - nowUs()) / 1e6;
     c.textContent = Math.ceil(rem);
     c.classList.toggle('show', rem >= 0.9);
   } else c.classList.remove('show');
-}, 100);
+}, 250);
 function countdown(hostAt) { countdownLocal = hostAt ? hostToLocal(hostAt) : null; }
-function identify() {
+
+const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+function flashColour(ms = 450) {
+  if (reduceMotion) return;
   const o = $('identify');
-  o.textContent = `#${slot + 1} ${name}`;
+  o.textContent = String(slot + 1);
+  o.style.color = lum(colour()) > 0.4 ? '#000' : '#fff';
   o.classList.add('show');
-  setTimeout(() => o.classList.remove('show'), 1500);
+  if (navigator.vibrate) navigator.vibrate(30);
+  setTimeout(() => o.classList.remove('show'), ms);
 }
+function identify() { flashColour(1500); }
+
 function end(by) {
   if (ended) return;
   ended = by;
   if (recorder) stopVideo({ at: hostNow() });
-  $('endedTitle').textContent = by === 'host' ? 'Session ended by host' : 'You left the session';
-  $('endedText').textContent = copies.length ? 'Tap "save" below the camera to keep copies on this iPhone.' : '';
+  $('endedTitle').textContent = by === 'host' ? 'The shoot has ended' : 'You left the rig';
+  $('endedText').textContent = stored.some((r) => !r.saved)
+    ? 'Your photos and videos are kept on this iPhone. Save them to Photos now.'
+    : 'Your photos and videos were sent to the controlling phone.';
+  $('endedSave').style.display = stored.some((r) => !r.saved) ? 'block' : 'none';
   $('ended').classList.add('show');
   setTimeout(() => link && link.close(), 300);
 }
 
 $('leave').onclick = () => {
-  if (!confirm(recorder ? 'This camera is recording. Leave and save the clip?' : 'Leave this session?')) return;
+  if (!confirm(recorder ? 'This camera is recording. Leave and keep the clip?' : 'Leave the rig?')) return;
   send('bye');
   end('left');
 };
 $('dimBtn').onclick = () => $('dim').classList.add('show');
 $('dim').onclick = () => $('dim').classList.remove('show');
-$('captures').onclick = async () => {
-  if (!copies.length) return;
-  const c = copies[0];
-  const file = new File([c.blob], c.name, { type: c.blob.type });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file] }); copies.shift(); render(); } catch (_) {}
-  } else {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(c.blob);
-    a.download = c.name;
-    a.click();
-  }
+$('gridBtn').onclick = () => {
+  const on = $('grid').style.display !== 'block';
+  $('grid').style.display = on ? 'block' : 'none';
+  $('gridBtn').classList.toggle('on', on);
 };
 
+// --------------------------------------------------- saving to Photos
+// Safari only lets a page hand files to Photos through the share sheet
+// ("Save Video" / "Save Image"), which needs a tap, so the page offers it
+// after each clip and keeps everything until it's saved.
+function fileOf(r) { return new File([r.blob], r.name, { type: r.blob.type || (r.kind === 'video' ? 'video/mp4' : 'image/jpeg') }); }
+
+async function saveToPhotos(recs) {
+  if (!recs.length) return;
+  const files = recs.map(fileOf);
+  if (navigator.canShare && navigator.canShare({ files })) {
+    try {
+      await navigator.share({ files });
+      for (const r of recs) { r.saved = true; await Store.update(r.id, { saved: true }); }
+    } catch (e) {
+      if (e && e.name !== 'AbortError' && recs.length > 1) {
+        // Too many at once for the share sheet: offer them one by one.
+        lastError = 'Save them one at a time from the list.';
+        renderErr();
+      }
+    }
+  } else {
+    for (const [i, r] of recs.entries()) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(files[i]);
+      a.download = r.name;
+      a.click();
+      r.saved = true;
+      await Store.update(r.id, { saved: true });
+    }
+  }
+  await refreshStored();
+  renderKept();
+}
+
+let promptTimer = null;
+function showSavePrompt() {
+  const p = $('savePrompt');
+  p.classList.add('show');
+  clearTimeout(promptTimer);
+  promptTimer = setTimeout(() => p.classList.remove('show'), 12000);
+}
+$('savePromptBtn').onclick = () => { $('savePrompt').classList.remove('show'); saveToPhotos(stored.filter((r) => !r.saved).slice(0, 1)); };
+$('savePromptClose').onclick = () => $('savePrompt').classList.remove('show');
+
+function fmtSize(b) { return b > 1e9 ? (b / 1e9).toFixed(1) + ' GB' : b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB'; }
+
+async function renderKept() {
+  const list = $('keptList');
+  list.textContent = '';
+  if (!stored.length) {
+    list.innerHTML = '<p class="muted">Nothing yet. Every photo and video this iPhone takes is kept here too.</p>';
+  }
+  for (const r of stored) {
+    const row = document.createElement('div');
+    row.className = 'kept';
+    const thumb = document.createElement(r.kind === 'video' ? 'video' : 'img');
+    thumb.className = 'thumb';
+    thumb.src = URL.createObjectURL(r.blob);
+    if (r.kind === 'video') { thumb.muted = true; thumb.playsInline = true; thumb.preload = 'metadata'; }
+    const info = document.createElement('div');
+    info.className = 'info';
+    info.innerHTML = `<b>${r.kind === 'video' ? 'Video' : 'Photo'}</b><span class="mono">${fmtSize(r.size)}</span>` +
+      `<span class="tag ${r.saved ? 'ok' : ''}">${r.saved ? 'Saved to Photos' : 'Only here'}</span>` +
+      (r.uploaded ? '' : '<span class="tag warn">Not sent yet</span>');
+    const save = document.createElement('button');
+    save.textContent = 'Save';
+    save.onclick = () => saveToPhotos([r]);
+    const del = document.createElement('button');
+    del.textContent = 'Delete';
+    del.className = 'ghost';
+    del.onclick = async () => {
+      if (!r.saved && !confirm('This file isn\'t saved to Photos yet. Delete it from this iPhone?')) return;
+      await Store.remove(r.id);
+      await refreshStored();
+      renderKept();
+    };
+    row.append(thumb, info, save, del);
+    list.append(row);
+  }
+  const u = await Store.usage();
+  $('keptUsage').textContent = u.quota ? `Using ${fmtSize(u.used)} of this iPhone's browser storage` : '';
+  $('keptSaveAll').disabled = !stored.some((r) => !r.saved);
+}
+$('keptBtn').onclick = async () => { await refreshStored(); await renderKept(); $('keptSheet').classList.add('show'); };
+$('keptClose').onclick = () => $('keptSheet').classList.remove('show');
+$('keptSaveAll').onclick = () => saveToPhotos(stored.filter((r) => !r.saved));
+$('endedSave').onclick = async () => { await refreshStored(); await renderKept(); $('keptSheet').classList.add('show'); };
+
+// ------------------------------------------------------- staying awake
 let wakeLock = null;
 async function keepAwake() {
   try { wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
@@ -491,15 +696,30 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     keepAwake();
     if (started && !ended && !link) connect();
+    // iOS may have stopped the camera while the screen was locked.
+    if (started && !ended && (!stream || stream.getVideoTracks().every((t) => t.readyState === 'ended'))) {
+      openCamera(settings).catch(cameraError);
+    }
   }
 });
 
+// One-time tip: Add to Home Screen gives a full-screen camera that's less
+// likely to be closed by accident.
+const standalone = window.navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+if (!standalone && /iPhone|iPad/.test(navigator.userAgent) && !localStorage.getItem('synccam.a2hs')) {
+  $('a2hs').style.display = 'block';
+}
+$('a2hsClose').onclick = () => { localStorage.setItem('synccam.a2hs', '1'); $('a2hs').style.display = 'none'; };
+
+if (S.mode === 'rtc') {
+  $('privateText').textContent = 'This page only talks to the phone running SyncCam. Internet is used just for an encrypted hello; photos and videos go phone to phone.';
+}
 $('name').value = name;
 $('startBtn').onclick = async () => {
   name = $('name').value.trim() || name;
   localStorage.setItem('synccam.name', name);
   if (!navigator.mediaDevices || !window.isSecureContext) {
-    $('startErr').textContent = 'Camera needs the secure page. Open the setup link from the host again.';
+    $('startErr').textContent = 'The camera needs the secure page. Scan the code on the controlling phone again.';
     return;
   }
   try {
@@ -516,5 +736,13 @@ $('startBtn').onclick = async () => {
   connect();
   render();
 };
+$('startKept').onclick = async () => { await refreshStored(); await renderKept(); $('keptSheet').classList.add('show'); };
+
+refreshStored().then(() => {
+  const unsaved = stored.filter((r) => !r.saved).length;
+  if (unsaved) {
+    $('startKept').style.display = 'block';
+    $('startKept').textContent = `${unsaved} file${unsaved === 1 ? '' : 's'} on this iPhone not saved to Photos`;
+  }
+});
 render();
-renderSync();

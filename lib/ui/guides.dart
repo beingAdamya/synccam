@@ -18,16 +18,17 @@ const guides = <Guide>[
   Guide(
     icon: Icons.play_circle_fill_rounded,
     color: Brand.red,
-    title: 'Start a shoot',
-    summary: 'Use one phone to control all the cameras.',
+    title: 'Control a rig',
+    summary: 'Use one phone to see and control every camera.',
     steps: [
-      'Put every phone on the same Wi-Fi. No Wi-Fi? Turn on a hotspot on the phone you\'ll use to control the shoot, and connect the others to it.',
-      'On the controlling phone, tap Start a shoot and give it a name.',
-      'Add cameras (see the guides below). Each one appears as a live picture on your screen.',
-      'Wait until the top says "All in sync", then press the big shutter button. Every camera shoots at the same moment.',
+      'Put every phone on the same Wi-Fi. No Wi-Fi? Turn on a hotspot on the controlling phone, and connect the others to it.',
+      'On the controlling phone, tap Control a rig and give it a name.',
+      'Tap Add camera (see the guides below). Each camera appears on the live wall with its own number and colour.',
+      'Wait until the top says "6 of 6 ready" in green, then press the shutter. Every camera shoots at the same moment.',
     ],
     tips: [
-      'Turn on "Use this phone as a camera too" if the controlling phone should film as well.',
+      'Turn on "This phone films too" if the controlling phone should film as well.',
+      'Tap the ready counter to see which camera isn\'t ready and how to fix it.',
       'Keep phones plugged in for long shoots. SyncCam keeps their screens awake.',
     ],
   ),
@@ -39,8 +40,8 @@ const guides = <Guide>[
     steps: [
       'Connect the phone to the same Wi-Fi or hotspot as the controlling phone.',
       'Open SyncCam and tap Join as a camera.',
-      'Tap your shoot when it appears in the list. If it doesn\'t appear, tap Scan code and point at the QR code on the controlling phone.',
-      'Allow camera and microphone access when asked. The phone now shows "Controlled by host".',
+      'Tap Scan code and point at the code on the controlling phone. Can\'t scan? Type the 4-digit code under it.',
+      'Allow camera and microphone access when asked. The screen flashes its colour and shows its big number.',
     ],
   ),
   Guide(
@@ -50,13 +51,14 @@ const guides = <Guide>[
     summary: 'Nothing to install: it works in Safari.',
     steps: [
       'Connect the iPhone to the same Wi-Fi or hotspot. It needs internet just for joining.',
-      'On the controlling phone, tap Add cameras and choose iPhone, no app.',
+      'On the controlling phone, tap Add camera and choose iPhone.',
       'Point the iPhone\'s Camera app at the QR code and tap the link that appears.',
       'In Safari, tap Start camera and allow camera access. Done.',
     ],
     tips: [
       'Keep Safari open with the screen on while you shoot.',
-      'To keep a copy of a photo or video on the iPhone, tap "save" at the bottom of the page.',
+      'Every photo and video is kept on the iPhone too. Tap the photos button at the bottom, then Save to Photos.',
+      'Tip: Share → Add to Home Screen gives a full-screen camera.',
     ],
   ),
   Guide(
@@ -65,7 +67,7 @@ const guides = <Guide>[
     title: 'iPhones with no internet',
     summary: 'For shoots far from any internet. Needs a one-time setup.',
     steps: [
-      'On the controlling phone, tap Add cameras and choose Offline.',
+      'On the controlling phone, tap Add camera and choose Offline.',
       'Scan the QR code with the iPhone and open the link in Safari.',
       'Tap Download certificate, then Allow.',
       'Open Settings → General → VPN & Device Management, tap SyncCam and Install.',
@@ -82,13 +84,13 @@ const guides = <Guide>[
     steps: [
       'Turn on the camera\'s Wi-Fi remote control. Look for "Remote control", "PC Remote" or "Connect to smartphone/computer" in its network menu.',
       'Connect the phones to the camera\'s Wi-Fi, or connect the camera to your Wi-Fi.',
-      'On the controlling phone, open the menu (⋮) and choose Pro camera.',
-      'Pick your camera, check the address (filled in for you), and tap Connect.',
+      'On the controlling phone, tap Add camera → Find Wi-Fi cameras.',
+      'Tap your camera when it appears (or use the pairing help for your brand), then tap Connect.',
       'Turn on "Camera starts the phones" to start every phone by pressing record on the camera.',
     ],
     tips: [
       'If it won\'t connect, tap Connection log. It shows exactly what the camera answered.',
-      'Not listed, or no Wi-Fi? Choose "Any camera: sync by sound" instead.',
+      'Not listed, or no Wi-Fi? Choose "Add a camera that syncs by sound" instead.',
     ],
   ),
   Guide(
@@ -98,9 +100,9 @@ const guides = <Guide>[
     summary: 'Works with every camera that records sound. No connection needed.',
     steps: [
       'Start recording on your camera before or after you start the phones.',
-      'SyncCam plays a short beep just after recording starts. Make sure the camera can hear it.',
+      'SyncCam plays a short tone just after recording starts. Make sure the camera can hear it.',
       'After the shoot, copy the camera\'s video to a computer with the SyncCam files.',
-      'Run the line-up tool (see "Line up videos on a computer"). It finds the beep in every video and lines them up to the frame.',
+      'Run the line-up tool (see "Line up videos on a computer"). It finds the tone in every video and lines them up to the frame.',
     ],
   ),
   Guide(
@@ -109,7 +111,7 @@ const guides = <Guide>[
     title: 'Get perfect timing',
     summary: 'Every phone model reacts slightly differently. Measure it once.',
     steps: [
-      'On the controlling phone, open the menu (⋮) and choose Fine-tune timing.',
+      'On the controlling phone, open the ⋯ menu and choose Fine-tune timing.',
       'Point every camera at the controlling phone\'s screen, which shows a running clock.',
       'Tap Test shot.',
       'Tap Check results and type the time you see in each photo. SyncCam adjusts each phone for you.',
@@ -122,10 +124,11 @@ const guides = <Guide>[
     title: 'Find, compare and share',
     summary: 'All angles of a shot, side by side.',
     steps: [
-      'Open Gallery. Each press of the shutter is one "take" holding every camera\'s photo or video.',
+      'Open Gallery. Each press of the shutter is one take ("Take 14 · 6 angles") holding every camera\'s photo or video.',
       'Open a take to see all angles. Tap Compare to play the videos together, lined up.',
       'In Compare, switch between Grid, Side by side, Wipe, Overlay and Switcher.',
-      'Tap Save to put everything in your Photos, or Share to send it.',
+      'Long-press a take (or tap Select) to pick several, then Share, Save to Photos or Delete.',
+      'With photos from two or more cameras, tap Make bullet-time for a sweep around the moment.',
     ],
   ),
   Guide(
@@ -146,10 +149,10 @@ const guides = <Guide>[
     title: 'Something not working?',
     summary: 'Quick fixes for the common problems.',
     steps: [
-      'A phone can\'t find the shoot: check it\'s on the same Wi-Fi, or scan the QR code instead.',
-      'A camera shows "out of sync": wait a few seconds, or move closer to the Wi-Fi router.',
+      'A phone can\'t find the rig: check it\'s on the same Wi-Fi, or type the 4-digit code.',
+      'A camera shows "Drift": move it closer to the Wi-Fi router, or use the controlling phone\'s hotspot.',
       'Camera says access is off: allow Camera in the phone\'s Settings → SyncCam, then tap Try again.',
-      'iPhone page says the host didn\'t answer: make sure both phones have internet while joining.',
+      'iPhone page says the controlling phone didn\'t answer: make sure both phones have internet while joining.',
       'Pro camera won\'t connect: check its remote control mode is on, then send us the Connection log.',
     ],
   ),
@@ -168,7 +171,6 @@ class HelpScreen extends StatelessWidget {
           for (final g in guides) ...[
             ActionCard(
               icon: g.icon,
-              color: g.color,
               title: g.title,
               subtitle: g.summary,
               onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => GuideScreen(guide: g))),
@@ -193,11 +195,11 @@ class GuideScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
         children: [
-          Align(alignment: Alignment.centerLeft, child: IconBadge(guide.icon, color: guide.color, size: 64)),
+          Align(alignment: Alignment.centerLeft, child: IconBadge(guide.icon, size: 64)),
           const SizedBox(height: 16),
           Text(guide.title, style: t.headlineSmall),
           const SizedBox(height: 6),
-          Text(guide.summary, style: t.bodyMedium?.copyWith(color: Brand.textDim)),
+          Text(guide.summary, style: t.bodyMedium?.copyWith(color: context.sync.muted)),
           const SizedBox(height: 24),
           GlassCard(child: Steps(guide.steps)),
           if (guide.tips.isNotEmpty) ...[
@@ -206,9 +208,9 @@ class GuideScreen extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Icon(Icons.lightbulb_rounded, size: 18, color: Brand.warn),
+                  Icon(Icons.lightbulb_rounded, size: 18, color: context.sync.accent),
                   const SizedBox(width: 10),
-                  Expanded(child: Text(tip, style: t.bodyMedium?.copyWith(color: Brand.textDim))),
+                  Expanded(child: Text(tip, style: t.bodyMedium?.copyWith(color: context.sync.muted))),
                 ]),
               ),
           ],

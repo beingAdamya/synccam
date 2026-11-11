@@ -256,7 +256,14 @@ class CameraNode extends ChangeNotifier {
         notifyListeners();
       case Msg.settings:
         final next = CameraSettings.fromJson((m['s'] as Map).cast<String, dynamic>());
-        _lock.run(() => _applySettings(next));
+        final seq = (m['seq'] as num?)?.toInt();
+        _lock.run(() async {
+          _notes.clear();
+          await _applySettings(next);
+          // Tell the controller which settings took, and the nearest value
+          // used for any that couldn't.
+          if (seq != null) _send(Msg.applied, {'seq': seq, if (_notes.isNotEmpty) 'note': _notes.join(' · ')});
+        });
       case Msg.capturePhoto:
         _lock.run(() => _capturePhotos(
               take: m['take'] as String,
@@ -310,7 +317,13 @@ class CameraNode extends ChangeNotifier {
 
   Future<void> _initCamera(CameraSettings s) async {
     final desc = _pickCamera(s.lens);
-    if (desc == null) return;
+    if (desc == null) {
+      _notes.add('No camera found');
+      return;
+    }
+    if (s.lens == LensChoice.front && desc.lensDirection != CameraLensDirection.front) {
+      _notes.add('No front camera; using back');
+    }
     await _pauseLive();
     final old = controller;
     controller = null;
@@ -340,6 +353,7 @@ class CameraNode extends ChangeNotifier {
       final denied = e is CameraException &&
           (e.code.contains('Denied') || e.code.contains('ermission') || e.code.contains('Restricted'));
       cameraBlocked = denied;
+      _notes.add("Camera didn't start");
       lastError = denied
           ? 'Camera or microphone access is off. Allow it in Settings → SyncCam, then tap Try again.'
           : 'Camera failed to start: $e';
@@ -359,7 +373,11 @@ class CameraNode extends ChangeNotifier {
         await _initCamera(settings);
       });
 
+  /// Settings this camera couldn't match exactly, in plain words.
+  final List<String> _notes = [];
+
   Future<void> _applySettings(CameraSettings next) async {
+    if (recording && settings.needsReinit(next)) _notes.add('Format changes after recording');
     if (recording) {
       // Changing session parameters mid-recording would cut the clip; only
       // live parameters are applied while rolling.
@@ -391,11 +409,13 @@ class CameraNode extends ChangeNotifier {
       await attempt('flash', () => c.setFlashMode(FlashMode.values.byName(s.flash.name)));
     }
     if (force || s.zoom != old.zoom) {
+      if (s.zoom > maxZoom + 0.01) _notes.add('Used ${maxZoom.toStringAsFixed(1)}× zoom');
       await attempt('zoom', () => c.setZoomLevel(s.zoom.clamp(minZoom, maxZoom)));
     }
     if (force || s.exposureOffset != old.exposureOffset) {
       var ev = s.exposureOffset.clamp(minEv, maxEv);
       if (evStep > 0) ev = (ev / evStep).round() * evStep;
+      if ((ev - s.exposureOffset).abs() > 0.2) _notes.add('Used EV ${ev.toStringAsFixed(1)}');
       await attempt('exposure', () => c.setExposureOffset(ev));
     }
     if (force || s.exposureLocked != old.exposureLocked) {
@@ -428,6 +448,9 @@ class CameraNode extends ChangeNotifier {
       });
     }
     settings = s;
+    for (final e in errors) {
+      _notes.add("Can't use ${e.split(':').first}");
+    }
     // Unsupported features (e.g. stabilization on some phones) are reported
     // but never fatal.
     lastError = errors.isEmpty ? null : errors.join('; ');
